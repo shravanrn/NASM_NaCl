@@ -1,0 +1,8 @@
+**/*.1
+**/*.a
+**/*.o
+/.cproject
+/.project
+/nasm
+/ndisasm
+/.settings/
