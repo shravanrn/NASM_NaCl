@@ -1,3 +1,5 @@
+ A modification of the NASM assembler to support generation of instructions that are compliant with NACL's rules 
+
               NASM, the Netwide Assembler.
 
 Many many developers all over the net respect NASM for what it is
