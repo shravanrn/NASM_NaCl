@@ -189,6 +189,7 @@
 #include "tables.h"
 #include "disp8.h"
 #include "listing.h"
+#include "outform.h"
 
 enum match_result {
     /*
@@ -797,6 +798,49 @@ int64_t assemble(int32_t segment, int64_t start, int bits, insn *instruction)
         }
     }
     return data.offset - start;
+}
+
+int get_nacl_instruction_padding(int64_t offset, int64_t rawInstrSize)
+{
+	if(ofmt == &of_elf32)
+	{
+		if(rawInstrSize >= 32)
+		{
+			nasm_error(ERR_NONFATAL, "Instruction size greater than 32");
+			return 0;
+		}
+
+		if(rawInstrSize <= 0)
+		{
+			return 0;
+		}
+
+		{
+			/* Values from 0 to 31 */
+			int previousFinishOffset = (offset + 31) % 32;
+			/* Values from 0 to 31 */
+			int currentStartOffset = (previousFinishOffset + 1) % 32;
+			/* Values from 0 to 31 */
+			int currentInstructionFinishOffset = (currentStartOffset + rawInstrSize + 31) % 32;
+
+			if(currentInstructionFinishOffset < rawInstrSize - 1)
+			{
+				/* instruction would straddle 32 bit boundary */
+				/* return the padding required to nearest 32 byte boundary */
+				return 32 - previousFinishOffset - 1;
+			}
+			else
+			{
+				/* Instruction fits before boundary - no padding needed */
+				return 0;
+			}
+		}
+	}
+	else
+	{
+		nasm_error(ERR_NONFATAL, "Boundary checks not supported in formats other than elf32");
+		return 0;
+	}
 }
 
 int64_t insn_size(int32_t segment, int64_t offset, int bits, insn *instruction)

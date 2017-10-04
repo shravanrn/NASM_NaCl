@@ -1222,6 +1222,7 @@ extern int pass0;
 extern int passn;               /* Actual pass number */
 
 extern bool tasm_compatible_mode;
+extern bool nacl_mode;
 extern int optimizing;
 extern int globalbits;          /* 16, 32 or 64-bit mode */
 extern int globalrel;           /* default to relative addressing? */

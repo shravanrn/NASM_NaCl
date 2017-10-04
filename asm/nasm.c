@@ -88,6 +88,7 @@ static bool using_debug_info, opt_verbose_info;
 static const char *debug_format;
 
 bool tasm_compatible_mode = false;
+bool nacl_mode = false;
 int pass0, passn;
 static int pass1, pass2;	/* XXX: Get rid of these, they are redundant */
 int globalrel = 0;
@@ -775,7 +776,8 @@ static bool process_arg(char *p, char *q, int pass)
                  "[-l listfile]\n"
                  "            [options...] [--] filename\n"
                  "    or nasm -v (or --v) for version info\n\n"
-                 "    -t          assemble in SciTech TASM compatible mode\n");
+                 "    -t          assemble in SciTech TASM compatible mode\n"
+                 "    -nacl       assemble in NACL compliant mode\n");
             printf
                 ("    -E (or -e)  preprocess only (writes output to stdout by default)\n"
                  "    -a          don't preprocess (assemble only)\n"
@@ -844,6 +846,14 @@ static bool process_arg(char *p, char *q, int pass)
             if (pass == 2)
                 tasm_compatible_mode = true;
             break;
+
+        case 'n':
+        	if(strcmp(p, "-nacl") == 0)
+        		nacl_mode = true;
+        	else
+                nasm_error(ERR_NONFATAL | ERR_NOFILE | ERR_USAGE,
+                           "unrecognised option `-%c'", p[1]);
+        	break;
 
         case 'v':
             show_version();
@@ -1196,6 +1206,7 @@ static void assemble_file(char *fname, StrList **depend_ptr)
     pass_max = prev_offset_changed = (INT_MAX >> 1) + 2; /* Almost unlimited */
     for (passn = 1; pass0 <= 2; passn++) {
         ldfunc def_label;
+        insn noop_ins;
 
         pass1 = pass0 == 2 ? 2 : 1;     /* 1, 1, 1, ..., 1, 2 */
         pass2 = passn > 1  ? 2 : 1;     /* 1, 2, 2, ..., 2, 2 */
@@ -1229,6 +1240,8 @@ static void assemble_file(char *fname, StrList **depend_ptr)
         if (passn == 1)
             location.known = true;
         location.offset = offs = get_curr_offs();
+
+        parse_line(pass1, "nop", &noop_ins, def_label);
 
         while ((line = preproc->getline())) {
             globallineno++;
@@ -1339,9 +1352,47 @@ static void assemble_file(char *fname, StrList **depend_ptr)
             } else {        /* instruction isn't an EQU */
 
                 if (pass1 == 1) {
-                    int64_t l = insn_size(location.segment, offs, globalbits,
-                                          &output_ins);
-                    l *= output_ins.times;
+
+                	int64_t l;
+
+                    if(nacl_mode)
+                    {
+                    	int32_t timesCopy = output_ins.times;
+                    	int64_t offsetCopy = offs;
+                    	const int64_t instructionSize = insn_size(location.segment, offs, globalbits,
+                                &output_ins);
+
+                    	if(instructionSize > 0)
+                    	{
+							l = 0;
+
+							/* Figure out the size of the instruction by computing the instruction size
+							*  multiplied by repeat count, accounting for padding required
+							*  to avoid straddling 32 byte boundaries
+							*/
+							while(timesCopy--)
+							{
+								int paddingSize = get_nacl_instruction_padding(offsetCopy, instructionSize);
+								l += instructionSize + paddingSize;
+								offsetCopy += instructionSize + paddingSize;
+							}
+                    	}
+                    	else
+                    	{
+                    		/* 0 This happens for some instructions
+                    		 * -1 Apparently this happens on an error
+                    		 *  Resort to the usual NASM behavior for these cases
+                    		 */
+                    		l = instructionSize;
+                    		l *= timesCopy;
+                    	}
+                    }
+                    else
+                    {
+                        l = insn_size(location.segment, offs, globalbits,
+                                              &output_ins);
+                    	l *= output_ins.times;
+                    }
 
                     /* if (using_debug_info)  && output_ins.opcode != -1) */
                     if (using_debug_info)
@@ -1419,7 +1470,53 @@ static void assemble_file(char *fname, StrList **depend_ptr)
                      */
 
                 } else {
-                    offs += assemble(location.segment, offs, globalbits, &output_ins);
+                	if(nacl_mode)
+                	{
+                        int64_t instructionSize = insn_size(location.segment, offs, globalbits,
+                                              &output_ins);
+
+                        if(instructionSize > 0 && output_ins.times > 0)
+                        {
+                    		const int32_t timesCopy = output_ins.times;
+
+							if(output_ins.times > 1)
+							{
+								/* Overwrite the times to 1 for now, as we are generating the assembly
+								*  one at a time, so that we can insert appropriate padding
+								*  to avoid straddling 32 byte boundaries. We will restore this later
+								*/
+								output_ins.times = 1;
+							}
+
+							/* generate instructions as many times as necessary */
+							for(int32_t i = 0; i < timesCopy; i++)
+							{
+								/* If the instruction doesn't fit before the next 32 byte boundary,
+								*  this function gives the amount of padding required
+								*/
+								const int paddingSize = get_nacl_instruction_padding(offs, instructionSize);
+
+								/* assemble the appropriate amount of noop instructions */
+								for(int j = 0; j < paddingSize; j++)
+								{
+									offs += assemble(location.segment, offs, globalbits, &noop_ins);
+								}
+
+								offs += assemble(location.segment, offs, globalbits, &output_ins);
+							}
+
+							/* restore the output instruction repeat count in case something else depends on this */
+							output_ins.times = timesCopy;
+                        }
+                        else
+						{
+							offs += assemble(location.segment, offs, globalbits, &output_ins);
+						}
+                	}
+                	else
+                	{
+                		offs += assemble(location.segment, offs, globalbits, &output_ins);
+                	}
                     set_curr_offs(offs);
 
                 }
