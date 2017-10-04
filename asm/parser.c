@@ -426,6 +426,50 @@ static int value_to_extop(expr * vect, extop *eop, int32_t myseg)
     return 0;
 }
 
+bool parse_check_is_label(char *buffer)
+{
+    int i;
+    stdscan_reset();
+    stdscan_set(buffer);
+    i = stdscan(NULL, &tokval);
+
+    /* Ignore blank lines */
+    if (i == TOKEN_EOS)
+        return false;
+
+    if (i != TOKEN_ID       &&
+        i != TOKEN_INSN     &&
+        i != TOKEN_PREFIX   &&
+        (i != TOKEN_REG || !IS_SREG(tokval.t_integer))) {
+        return false;
+    }
+
+
+    if (i == TOKEN_ID)
+    {
+    	i = stdscan(NULL, &tokval);
+		if (i == ':') {         /* skip over the optional colon */
+			i = stdscan(NULL, &tokval);
+		}
+    }
+
+    /* Just a label here */
+    if (i == TOKEN_EOS)
+        return true;
+
+    while (i == TOKEN_PREFIX ||
+           (i == TOKEN_REG && IS_SREG(tokval.t_integer))) {
+		i = stdscan(NULL, &tokval);
+    }
+
+    if (tokval.t_integer == I_none)
+    {
+    	return true;
+    }
+
+    return false;
+}
+
 insn *parse_line(int pass, char *buffer, insn *result, ldfunc ldef)
 {
     bool insn_is_label = false;

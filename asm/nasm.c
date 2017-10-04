@@ -1190,11 +1190,284 @@ static void parse_cmdline(int argc, char **argv, int pass)
     }
 }
 
+static void process_non_directive_line(char *line, int64_t* offs, insn* output_ins, insn* noop_ins, ldfunc def_label)
+{
+    int i;
+
+	if (optimizing > 0) {
+		if (forwref != NULL && globallineno == forwref->lineno) {
+			output_ins->forw_ref = true;
+			do {
+				output_ins->oprs[forwref->operand].opflags |= OPFLAG_FORWARD;
+				forwref = saa_rstruct(forwrefs);
+			} while (forwref != NULL
+					 && forwref->lineno == globallineno);
+		} else
+			output_ins->forw_ref = false;
+
+		if (output_ins->forw_ref) {
+			if (passn == 1) {
+				for (i = 0; i < output_ins->operands; i++) {
+					if (output_ins->oprs[i].opflags & OPFLAG_FORWARD) {
+						struct forwrefinfo *fwinf = (struct forwrefinfo *)saa_wstruct(forwrefs);
+						fwinf->lineno = globallineno;
+						fwinf->operand = i;
+					}
+				}
+			}
+		}
+	}
+
+	/*  forw_ref */
+	if (output_ins->opcode == I_EQU) {
+		if (pass1 == 1) {
+			/*
+			 * Special `..' EQUs get processed in pass two,
+			 * except `..@' macro-processor EQUs which are done
+			 * in the normal place.
+			 */
+			if (!output_ins->label)
+				nasm_error(ERR_NONFATAL,
+						   "EQU not preceded by label");
+
+			else if (output_ins->label[0] != '.' ||
+					 output_ins->label[1] != '.' ||
+					 output_ins->label[2] == '@') {
+				if (output_ins->operands == 1 &&
+					(output_ins->oprs[0].type & IMMEDIATE) &&
+					output_ins->oprs[0].wrt == NO_SEG) {
+					bool isext = !!(output_ins->oprs[0].opflags & OPFLAG_EXTERN);
+					def_label(output_ins->label,
+							  output_ins->oprs[0].segment,
+							  output_ins->oprs[0].offset, NULL,
+							  false, isext);
+				} else if (output_ins->operands == 2
+						   && (output_ins->oprs[0].type & IMMEDIATE)
+						   && (output_ins->oprs[0].type & COLON)
+						   && output_ins->oprs[0].segment == NO_SEG
+						   && output_ins->oprs[0].wrt == NO_SEG
+						   && (output_ins->oprs[1].type & IMMEDIATE)
+						   && output_ins->oprs[1].segment == NO_SEG
+						   && output_ins->oprs[1].wrt == NO_SEG) {
+					def_label(output_ins->label,
+							  output_ins->oprs[0].offset | SEG_ABS,
+							  output_ins->oprs[1].offset,
+							  NULL, false, false);
+				} else
+					nasm_error(ERR_NONFATAL,
+							   "bad syntax for EQU");
+			}
+		} else {
+			/*
+			 * Special `..' EQUs get processed here, except
+			 * `..@' macro processor EQUs which are done above.
+			 */
+			if (output_ins->label[0] == '.' &&
+				output_ins->label[1] == '.' &&
+				output_ins->label[2] != '@') {
+				if (output_ins->operands == 1 &&
+					(output_ins->oprs[0].type & IMMEDIATE)) {
+					define_label(output_ins->label,
+								 output_ins->oprs[0].segment,
+								 output_ins->oprs[0].offset,
+								 NULL, false, false);
+				} else if (output_ins->operands == 2
+						   && (output_ins->oprs[0].type & IMMEDIATE)
+						   && (output_ins->oprs[0].type & COLON)
+						   && output_ins->oprs[0].segment == NO_SEG
+						   && (output_ins->oprs[1].type & IMMEDIATE)
+						   && output_ins->oprs[1].segment == NO_SEG) {
+					define_label(output_ins->label,
+								 output_ins->oprs[0].offset | SEG_ABS,
+								 output_ins->oprs[1].offset,
+								 NULL, false, false);
+				} else
+					nasm_error(ERR_NONFATAL,
+							   "bad syntax for EQU");
+			}
+		}
+	} else {        /* instruction isn't an EQU */
+
+		if (pass1 == 1) {
+
+			int64_t l;
+
+			if(nacl_mode)
+			{
+				int32_t timesCopy = output_ins->times;
+				int64_t offsetCopy = *offs;
+				const int64_t instructionSize = insn_size(location.segment, *offs, globalbits,
+						output_ins);
+
+				if(instructionSize > 0)
+				{
+					l = 0;
+
+					/* Figure out the size of the instruction by computing the instruction size
+					*  multiplied by repeat count, accounting for padding required
+					*  to avoid straddling 32 byte boundaries
+					*/
+					while(timesCopy--)
+					{
+						int paddingSize = get_nacl_instruction_padding(offsetCopy, instructionSize);
+						l += instructionSize + paddingSize;
+						offsetCopy += instructionSize + paddingSize;
+					}
+				}
+				else
+				{
+					/* 0 This happens for some instructions
+					 * -1 Apparently this happens on an error
+					 *  Resort to the usual NASM behavior for these cases
+					 */
+					l = instructionSize;
+					l *= timesCopy;
+				}
+			}
+			else
+			{
+				l = insn_size(location.segment, *offs, globalbits,
+									  output_ins);
+				l *= output_ins->times;
+			}
+
+			/* if (using_debug_info)  && output_ins->opcode != -1) */
+			if (using_debug_info)
+			{       /* fbk 03/25/01 */
+					/* this is done here so we can do debug type info */
+				int32_t typeinfo =
+					TYS_ELEMENTS(output_ins->operands);
+				switch (output_ins->opcode) {
+				case I_RESB:
+					typeinfo =
+						TYS_ELEMENTS(output_ins->oprs[0].offset) | TY_BYTE;
+					break;
+				case I_RESW:
+					typeinfo =
+						TYS_ELEMENTS(output_ins->oprs[0].offset) | TY_WORD;
+					break;
+				case I_RESD:
+					typeinfo =
+						TYS_ELEMENTS(output_ins->oprs[0].offset) | TY_DWORD;
+					break;
+				case I_RESQ:
+					typeinfo =
+						TYS_ELEMENTS(output_ins->oprs[0].offset) | TY_QWORD;
+					break;
+				case I_REST:
+					typeinfo =
+						TYS_ELEMENTS(output_ins->oprs[0].offset) | TY_TBYTE;
+					break;
+				case I_RESO:
+					typeinfo =
+						TYS_ELEMENTS(output_ins->oprs[0].offset) | TY_OWORD;
+					break;
+				case I_RESY:
+					typeinfo =
+						TYS_ELEMENTS(output_ins->oprs[0].offset) | TY_YWORD;
+					break;
+				case I_DB:
+					typeinfo |= TY_BYTE;
+					break;
+				case I_DW:
+					typeinfo |= TY_WORD;
+					break;
+				case I_DD:
+					if (output_ins->eops_float)
+						typeinfo |= TY_FLOAT;
+					else
+						typeinfo |= TY_DWORD;
+					break;
+				case I_DQ:
+					typeinfo |= TY_QWORD;
+					break;
+				case I_DT:
+					typeinfo |= TY_TBYTE;
+					break;
+				case I_DO:
+					typeinfo |= TY_OWORD;
+					break;
+				case I_DY:
+					typeinfo |= TY_YWORD;
+					break;
+				default:
+					typeinfo = TY_LABEL;
+
+				}
+
+				dfmt->debug_typevalue(typeinfo);
+			}
+			if (l != -1) {
+				*offs += l;
+				set_curr_offs(*offs);
+			}
+			/*
+			 * else l == -1 => invalid instruction, which will be
+			 * flagged as an error on pass 2
+			 */
+
+		} else {
+			if(nacl_mode)
+			{
+				int64_t instructionSize = insn_size(location.segment, *offs, globalbits,
+									  output_ins);
+
+				if(instructionSize > 0 && output_ins->times > 0)
+				{
+					const int32_t timesCopy = output_ins->times;
+
+					if(output_ins->times > 1)
+					{
+						/* Overwrite the times to 1 for now, as we are generating the assembly
+						*  one at a time, so that we can insert appropriate padding
+						*  to avoid straddling 32 byte boundaries. We will restore this later
+						*/
+						output_ins->times = 1;
+					}
+
+					/* generate instructions as many times as necessary */
+					for(int32_t i = 0; i < timesCopy; i++)
+					{
+						/* If the instruction doesn't fit before the next 32 byte boundary,
+						*  this function gives the amount of padding required
+						*/
+						const int paddingSize = get_nacl_instruction_padding(*offs, instructionSize);
+
+						/* assemble the appropriate amount of noop instructions */
+						for(int j = 0; j < paddingSize; j++)
+						{
+							*offs += assemble(location.segment, *offs, globalbits, noop_ins);
+						}
+
+						*offs += assemble(location.segment, *offs, globalbits, output_ins);
+					}
+
+					/* restore the output instruction repeat count in case something else depends on this */
+					output_ins->times = timesCopy;
+				}
+				else
+				{
+					*offs += assemble(location.segment, *offs, globalbits, output_ins);
+				}
+			}
+			else
+			{
+				*offs += assemble(location.segment, *offs, globalbits, output_ins);
+			}
+			set_curr_offs(*offs);
+
+		}
+	}               /* not an EQU */
+	cleanup_insn(output_ins);
+
+	nasm_free(line);
+	location.offset = *offs = get_curr_offs();
+}
+
 static void assemble_file(char *fname, StrList **depend_ptr)
 {
     char *line;
     insn output_ins;
-    int i;
     int64_t offs;
     int pass_max;
     uint64_t prev_offset_changed;
@@ -1251,281 +1524,44 @@ static void assemble_file(char *fname, StrList **depend_ptr)
              * main parser.
              */
             if (process_directives(line))
-                goto end_of_line; /* Just do final cleanup */
-
-            /* Not a directive, or even something that starts with [ */
-
-            parse_line(pass1, line, &output_ins, def_label);
-
-            if (optimizing > 0) {
-                if (forwref != NULL && globallineno == forwref->lineno) {
-                    output_ins.forw_ref = true;
-                    do {
-                        output_ins.oprs[forwref->operand].opflags |= OPFLAG_FORWARD;
-                        forwref = saa_rstruct(forwrefs);
-                    } while (forwref != NULL
-                             && forwref->lineno == globallineno);
-                } else
-                    output_ins.forw_ref = false;
-
-                if (output_ins.forw_ref) {
-                    if (passn == 1) {
-                        for (i = 0; i < output_ins.operands; i++) {
-                            if (output_ins.oprs[i].opflags & OPFLAG_FORWARD) {
-                                struct forwrefinfo *fwinf = (struct forwrefinfo *)saa_wstruct(forwrefs);
-                                fwinf->lineno = globallineno;
-                                fwinf->operand = i;
-                            }
-                        }
-                    }
-                }
+            {
+				nasm_free(line);
+				location.offset = offs = get_curr_offs();
             }
+            else
+            {
+				/* Not a directive, or even something that starts with [ */
+            	if(nacl_mode)
+            	{
+            		bool isLabel = parse_check_is_label(line);
 
-            /*  forw_ref */
-            if (output_ins.opcode == I_EQU) {
-                if (pass1 == 1) {
-                    /*
-                     * Special `..' EQUs get processed in pass two,
-                     * except `..@' macro-processor EQUs which are done
-                     * in the normal place.
-                     */
-                    if (!output_ins.label)
-                        nasm_error(ERR_NONFATAL,
-                                   "EQU not preceded by label");
-
-                    else if (output_ins.label[0] != '.' ||
-                             output_ins.label[1] != '.' ||
-                             output_ins.label[2] == '@') {
-                        if (output_ins.operands == 1 &&
-                            (output_ins.oprs[0].type & IMMEDIATE) &&
-                            output_ins.oprs[0].wrt == NO_SEG) {
-                            bool isext = !!(output_ins.oprs[0].opflags & OPFLAG_EXTERN);
-                            def_label(output_ins.label,
-                                      output_ins.oprs[0].segment,
-                                      output_ins.oprs[0].offset, NULL,
-                                      false, isext);
-                        } else if (output_ins.operands == 2
-                                   && (output_ins.oprs[0].type & IMMEDIATE)
-                                   && (output_ins.oprs[0].type & COLON)
-                                   && output_ins.oprs[0].segment == NO_SEG
-                                   && output_ins.oprs[0].wrt == NO_SEG
-                                   && (output_ins.oprs[1].type & IMMEDIATE)
-                                   && output_ins.oprs[1].segment == NO_SEG
-                                   && output_ins.oprs[1].wrt == NO_SEG) {
-                            def_label(output_ins.label,
-                                      output_ins.oprs[0].offset | SEG_ABS,
-                                      output_ins.oprs[1].offset,
-                                      NULL, false, false);
-                        } else
-                            nasm_error(ERR_NONFATAL,
-                                       "bad syntax for EQU");
-                    }
-                } else {
-                    /*
-                     * Special `..' EQUs get processed here, except
-                     * `..@' macro processor EQUs which are done above.
-                     */
-                    if (output_ins.label[0] == '.' &&
-                        output_ins.label[1] == '.' &&
-                        output_ins.label[2] != '@') {
-                        if (output_ins.operands == 1 &&
-                            (output_ins.oprs[0].type & IMMEDIATE)) {
-                            define_label(output_ins.label,
-                                         output_ins.oprs[0].segment,
-                                         output_ins.oprs[0].offset,
-                                         NULL, false, false);
-                        } else if (output_ins.operands == 2
-                                   && (output_ins.oprs[0].type & IMMEDIATE)
-                                   && (output_ins.oprs[0].type & COLON)
-                                   && output_ins.oprs[0].segment == NO_SEG
-                                   && (output_ins.oprs[1].type & IMMEDIATE)
-                                   && output_ins.oprs[1].segment == NO_SEG) {
-                            define_label(output_ins.label,
-                                         output_ins.oprs[0].offset | SEG_ABS,
-                                         output_ins.oprs[1].offset,
-                                         NULL, false, false);
-                        } else
-                            nasm_error(ERR_NONFATAL,
-                                       "bad syntax for EQU");
-                    }
-                }
-            } else {        /* instruction isn't an EQU */
-
-                if (pass1 == 1) {
-
-                	int64_t l;
-
-                    if(nacl_mode)
-                    {
-                    	int32_t timesCopy = output_ins.times;
-                    	int64_t offsetCopy = offs;
-                    	const int64_t instructionSize = insn_size(location.segment, offs, globalbits,
-                                &output_ins);
-
-                    	if(instructionSize > 0)
-                    	{
-							l = 0;
-
-							/* Figure out the size of the instruction by computing the instruction size
-							*  multiplied by repeat count, accounting for padding required
-							*  to avoid straddling 32 byte boundaries
-							*/
-							while(timesCopy--)
-							{
-								int paddingSize = get_nacl_instruction_padding(offsetCopy, instructionSize);
-								l += instructionSize + paddingSize;
-								offsetCopy += instructionSize + paddingSize;
-							}
-                    	}
-                    	else
-                    	{
-                    		/* 0 This happens for some instructions
-                    		 * -1 Apparently this happens on an error
-                    		 *  Resort to the usual NASM behavior for these cases
-                    		 */
-                    		l = instructionSize;
-                    		l *= timesCopy;
-                    	}
-                    }
-                    else
-                    {
-                        l = insn_size(location.segment, offs, globalbits,
-                                              &output_ins);
-                    	l *= output_ins.times;
-                    }
-
-                    /* if (using_debug_info)  && output_ins.opcode != -1) */
-                    if (using_debug_info)
-                    {       /* fbk 03/25/01 */
-                            /* this is done here so we can do debug type info */
-                        int32_t typeinfo =
-                            TYS_ELEMENTS(output_ins.operands);
-                        switch (output_ins.opcode) {
-                        case I_RESB:
-                            typeinfo =
-                                TYS_ELEMENTS(output_ins.oprs[0].offset) | TY_BYTE;
-                            break;
-                        case I_RESW:
-                            typeinfo =
-                                TYS_ELEMENTS(output_ins.oprs[0].offset) | TY_WORD;
-                            break;
-                        case I_RESD:
-                            typeinfo =
-                                TYS_ELEMENTS(output_ins.oprs[0].offset) | TY_DWORD;
-                            break;
-                        case I_RESQ:
-                            typeinfo =
-                                TYS_ELEMENTS(output_ins.oprs[0].offset) | TY_QWORD;
-                            break;
-                        case I_REST:
-                            typeinfo =
-                                TYS_ELEMENTS(output_ins.oprs[0].offset) | TY_TBYTE;
-                            break;
-                        case I_RESO:
-                            typeinfo =
-                                TYS_ELEMENTS(output_ins.oprs[0].offset) | TY_OWORD;
-                            break;
-                        case I_RESY:
-                            typeinfo =
-                                TYS_ELEMENTS(output_ins.oprs[0].offset) | TY_YWORD;
-                            break;
-                        case I_DB:
-                            typeinfo |= TY_BYTE;
-                            break;
-                        case I_DW:
-                            typeinfo |= TY_WORD;
-                            break;
-                        case I_DD:
-                            if (output_ins.eops_float)
-                                typeinfo |= TY_FLOAT;
-                            else
-                                typeinfo |= TY_DWORD;
-                            break;
-                        case I_DQ:
-                            typeinfo |= TY_QWORD;
-                            break;
-                        case I_DT:
-                            typeinfo |= TY_TBYTE;
-                            break;
-                        case I_DO:
-                            typeinfo |= TY_OWORD;
-                            break;
-                        case I_DY:
-                            typeinfo |= TY_YWORD;
-                            break;
-                        default:
-                            typeinfo = TY_LABEL;
-
-                        }
-
-                        dfmt->debug_typevalue(typeinfo);
-                    }
-                    if (l != -1) {
-                        offs += l;
-                        set_curr_offs(offs);
-                    }
-                    /*
-                     * else l == -1 => invalid instruction, which will be
-                     * flagged as an error on pass 2
-                     */
-
-                } else {
-                	if(nacl_mode)
-                	{
-                        int64_t instructionSize = insn_size(location.segment, offs, globalbits,
-                                              &output_ins);
-
-                        if(instructionSize > 0 && output_ins.times > 0)
-                        {
-                    		const int32_t timesCopy = output_ins.times;
-
-							if(output_ins.times > 1)
-							{
-								/* Overwrite the times to 1 for now, as we are generating the assembly
-								*  one at a time, so that we can insert appropriate padding
-								*  to avoid straddling 32 byte boundaries. We will restore this later
-								*/
-								output_ins.times = 1;
-							}
-
-							/* generate instructions as many times as necessary */
-							for(int32_t i = 0; i < timesCopy; i++)
-							{
-								/* If the instruction doesn't fit before the next 32 byte boundary,
-								*  this function gives the amount of padding required
-								*/
-								const int paddingSize = get_nacl_instruction_padding(offs, instructionSize);
-
-								/* assemble the appropriate amount of noop instructions */
-								for(int j = 0; j < paddingSize; j++)
-								{
-									offs += assemble(location.segment, offs, globalbits, &noop_ins);
-								}
-
-								offs += assemble(location.segment, offs, globalbits, &output_ins);
-							}
-
-							/* restore the output instruction repeat count in case something else depends on this */
-							output_ins.times = timesCopy;
-                        }
-                        else
+					if(isLabel &&
+						/* output_ins.opcode == I_none && output_ins.label != NULL && output_ins.label[0] != '\0' && */
+						offs % 32 != 0)
+					{
+						/* if label is not align it, align it */
+						int paddingRequired = 32 - (offs % 32);
+						if(paddingRequired <= 0 || paddingRequired >= 32)
 						{
-							offs += assemble(location.segment, offs, globalbits, &output_ins);
+							nasm_error(ERR_NONFATAL,
+									   "unexpected padding amount");
 						}
-                	}
-                	else
-                	{
-                		offs += assemble(location.segment, offs, globalbits, &output_ins);
-                	}
-                    set_curr_offs(offs);
+						else
+						{
+							insn padding_ins;
+							char* paddingInstruction = (char *) malloc(128);
+							globallineno--;
+							sprintf(paddingInstruction, "times %d nop", paddingRequired);
+							parse_line(pass1, paddingInstruction, &padding_ins, def_label);
+							process_non_directive_line(paddingInstruction, &offs, &padding_ins, &noop_ins, def_label);
+							globallineno++;
+						}
+					}
+            	}
 
-                }
-            }               /* not an EQU */
-            cleanup_insn(&output_ins);
-
-        end_of_line:
-            nasm_free(line);
-            location.offset = offs = get_curr_offs();
+				parse_line(pass1, line, &output_ins, def_label);
+				process_non_directive_line(line, &offs, &output_ins, &noop_ins, def_label);
+            }
         }                       /* end while (line = preproc->getline... */
 
         if (pass0 == 2 && global_offset_changed && !terminate_after_phase)

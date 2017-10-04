@@ -39,6 +39,7 @@
 #ifndef NASM_PARSER_H
 #define NASM_PARSER_H
 
+bool parse_check_is_label(char *buffer);
 insn *parse_line(int pass, char *buffer, insn *result, ldfunc ldef);
 void cleanup_insn(insn *instruction);
 
