@@ -1190,6 +1190,49 @@ static void parse_cmdline(int argc, char **argv, int pass)
     }
 }
 
+static int get_nacl_instruction_padding(int64_t offset, int64_t rawInstrSize)
+{
+	if(ofmt == &of_elf32)
+	{
+		if(rawInstrSize >= 32)
+		{
+			nasm_error(ERR_NONFATAL, "Instruction size greater than 32");
+			return 0;
+		}
+
+		if(rawInstrSize <= 0)
+		{
+			return 0;
+		}
+
+		{
+			/* Values from 0 to 31 */
+			int previousFinishOffset = (offset + 31) % 32;
+			/* Values from 0 to 31 */
+			int currentStartOffset = (previousFinishOffset + 1) % 32;
+			/* Values from 0 to 31 */
+			int currentInstructionFinishOffset = (currentStartOffset + rawInstrSize + 31) % 32;
+
+			if(currentInstructionFinishOffset < rawInstrSize - 1)
+			{
+				/* instruction would straddle 32 bit boundary */
+				/* return the padding required to nearest 32 byte boundary */
+				return 32 - previousFinishOffset - 1;
+			}
+			else
+			{
+				/* Instruction fits before boundary - no padding needed */
+				return 0;
+			}
+		}
+	}
+	else
+	{
+		nasm_error(ERR_NONFATAL, "Boundary checks not supported in formats other than elf32");
+		return 0;
+	}
+}
+
 static void process_non_directive_line(char *line, int64_t* offs, insn* output_ins, insn* noop_ins, ldfunc def_label)
 {
     int i;

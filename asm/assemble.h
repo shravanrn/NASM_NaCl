@@ -45,7 +45,6 @@ extern iflag_t cpu;
 extern bool in_absolute;        /* Are we in an absolute segment? */
 extern struct location absolute;
 
-int get_nacl_instruction_padding(int64_t offset, int64_t rawInstrSize);
 int64_t insn_size(int32_t segment, int64_t offset, int bits, insn *instruction);
 int64_t assemble(int32_t segment, int64_t offset, int bits, insn *instruction);
 
