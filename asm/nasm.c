@@ -1190,7 +1190,7 @@ static void parse_cmdline(int argc, char **argv, int pass)
     }
 }
 
-static int get_nacl_instruction_padding(int64_t offset, int64_t rawInstrSize)
+static int get_nacl_instruction_padding(int64_t offset, insn* output_ins, int64_t rawInstrSize)
 {
 	if(ofmt == &of_elf32)
 	{
@@ -1210,19 +1210,30 @@ static int get_nacl_instruction_padding(int64_t offset, int64_t rawInstrSize)
 			int previousFinishOffset = (offset + 31) % 32;
 			/* Values from 0 to 31 */
 			int currentStartOffset = (previousFinishOffset + 1) % 32;
-			/* Values from 0 to 31 */
-			int currentInstructionFinishOffset = (currentStartOffset + rawInstrSize + 31) % 32;
 
-			if(currentInstructionFinishOffset < rawInstrSize - 1)
+			if(output_ins->opcode == I_CALL)
 			{
-				/* instruction would straddle 32 bit boundary */
-				/* return the padding required to nearest 32 byte boundary */
-				return 32 - previousFinishOffset - 1;
+				/* rawInstrSize for call is usually 5 for 32 bit elf, so targetStartOffset is usually 27 */
+				int targetStartOffset = 32 - rawInstrSize;
+				int paddingRequired = (targetStartOffset - currentStartOffset + 32) % 32;
+				return paddingRequired;
 			}
 			else
 			{
-				/* Instruction fits before boundary - no padding needed */
-				return 0;
+				/* Values from 0 to 31 */
+				int currentInstructionFinishOffset = (currentStartOffset + rawInstrSize + 31) % 32;
+
+				if(currentInstructionFinishOffset < rawInstrSize - 1)
+				{
+					/* instruction would straddle 32 bit boundary */
+					/* return the padding required to nearest 32 byte boundary */
+					return 32 - previousFinishOffset - 1;
+				}
+				else
+				{
+					/* Instruction fits before boundary - no padding needed */
+					return 0;
+				}
 			}
 		}
 	}
@@ -1352,7 +1363,7 @@ static void process_non_directive_line(char *line, int64_t* offs, insn* output_i
 					*/
 					while(timesCopy--)
 					{
-						int paddingSize = get_nacl_instruction_padding(offsetCopy, instructionSize);
+						int paddingSize = get_nacl_instruction_padding(offsetCopy, output_ins, instructionSize);
 						l += instructionSize + paddingSize;
 						offsetCopy += instructionSize + paddingSize;
 					}
@@ -1474,7 +1485,7 @@ static void process_non_directive_line(char *line, int64_t* offs, insn* output_i
 						/* If the instruction doesn't fit before the next 32 byte boundary,
 						*  this function gives the amount of padding required
 						*/
-						const int paddingSize = get_nacl_instruction_padding(*offs, instructionSize);
+						const int paddingSize = get_nacl_instruction_padding(*offs, output_ins, instructionSize);
 
 						/* assemble the appropriate amount of noop instructions */
 						for(int j = 0; j < paddingSize; j++)
