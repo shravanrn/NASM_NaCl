@@ -1190,6 +1190,35 @@ static void parse_cmdline(int argc, char **argv, int pass)
     }
 }
 
+static insn* nacl_replace_instruction(insn* ins, int* count, bool* shouldFree)
+{
+	insn* ret = NULL;
+
+	if(ins->opcode == I_RET || ins->opcode == I_RETN || ins->opcode == I_RETF)
+	{
+		int pass1 = 0;
+		*shouldFree = true;
+		*count = 3;
+		ret = (insn*) malloc(sizeof(insn) * (*count));
+        parse_line(pass1, "pop ecx", &(ret[0]), NULL /* label callback */);
+        parse_line(pass1, "and ecx,0xFFFFFFE0", &(ret[1]), NULL /* label callback */);
+        if(ins->opcode == I_RETN)
+        	parse_line(pass1, "jmp near ecx", &(ret[2]), NULL /* label callback */);
+        else if(ins->opcode == I_RETF)
+			parse_line(pass1, "jmp far ecx", &(ret[2]), NULL /* label callback */);
+        else if(ins->opcode == I_RET)
+			parse_line(pass1, "jmp ecx", &(ret[2]), NULL /* label callback */);
+	}
+	else
+	{
+		*shouldFree = false;
+		*count = 1;
+		ret = ins;
+	}
+
+	return ret;
+}
+
 static int get_nacl_instruction_padding(int64_t offset, insn* output_ins, int64_t rawInstrSize)
 {
 	if(ofmt == &of_elf32)
@@ -1344,18 +1373,20 @@ static void process_non_directive_line(char *line, int64_t* offs, insn* output_i
 
 		if (pass1 == 1) {
 
-			int64_t l;
+			int64_t l = 0;
 
 			if(nacl_mode)
 			{
 				int32_t timesCopy = output_ins->times;
 				int64_t offsetCopy = *offs;
-				const int64_t instructionSize = insn_size(location.segment, *offs, globalbits,
+				int64_t instructionSize = insn_size(location.segment, *offs, globalbits,
 						output_ins);
 
 				if(instructionSize > 0)
 				{
-					l = 0;
+					int replaceCount;
+					bool shouldFree;
+					insn* replacedInstructions = nacl_replace_instruction(output_ins, &replaceCount, &shouldFree);
 
 					/* Figure out the size of the instruction by computing the instruction size
 					*  multiplied by repeat count, accounting for padding required
@@ -1363,9 +1394,20 @@ static void process_non_directive_line(char *line, int64_t* offs, insn* output_i
 					*/
 					while(timesCopy--)
 					{
-						int paddingSize = get_nacl_instruction_padding(offsetCopy, output_ins, instructionSize);
-						l += instructionSize + paddingSize;
-						offsetCopy += instructionSize + paddingSize;
+						for(int i = 0; i < replaceCount; i++)
+						{
+							int paddingSize;
+
+							int64_t currInstSize = insn_size(location.segment, offsetCopy, globalbits, &(replacedInstructions[i]));
+							paddingSize = get_nacl_instruction_padding(offsetCopy, &(replacedInstructions[i]), currInstSize);
+							l += currInstSize + paddingSize;
+							offsetCopy += currInstSize + paddingSize;
+						}
+					}
+
+					if(shouldFree)
+					{
+						free(replacedInstructions);
 					}
 				}
 				else
@@ -1479,21 +1521,38 @@ static void process_non_directive_line(char *line, int64_t* offs, insn* output_i
 						output_ins->times = 1;
 					}
 
-					/* generate instructions as many times as necessary */
-					for(int32_t i = 0; i < timesCopy; i++)
 					{
-						/* If the instruction doesn't fit before the next 32 byte boundary,
-						*  this function gives the amount of padding required
-						*/
-						const int paddingSize = get_nacl_instruction_padding(*offs, output_ins, instructionSize);
+						int replaceCount;
+						bool shouldFree;
+						insn* replacedInstructions = nacl_replace_instruction(output_ins, &replaceCount, &shouldFree);
 
-						/* assemble the appropriate amount of noop instructions */
-						for(int j = 0; j < paddingSize; j++)
+						/* generate instructions as many times as necessary */
+						for(int32_t ignor = 0; ignor< timesCopy; ignor++)
 						{
-							*offs += assemble(location.segment, *offs, globalbits, noop_ins);
+							for(int i = 0; i < replaceCount; i++)
+							{
+								/* If the instruction doesn't fit before the next 32 byte boundary,
+								*  this function gives the amount of padding required
+								*/
+								int paddingSize;
+
+								int64_t currInstSize = insn_size(location.segment, *offs, globalbits, &(replacedInstructions[i]));
+								paddingSize = get_nacl_instruction_padding(*offs, &(replacedInstructions[i]), currInstSize);
+
+								/* assemble the appropriate amount of noop instructions */
+								for(int j = 0; j < paddingSize; j++)
+								{
+									*offs += assemble(location.segment, *offs, globalbits, noop_ins);
+								}
+
+								*offs += assemble(location.segment, *offs, globalbits, &(replacedInstructions[i]));
+							}
 						}
 
-						*offs += assemble(location.segment, *offs, globalbits, output_ins);
+						if(shouldFree)
+						{
+							free(replacedInstructions);
+						}
 					}
 
 					/* restore the output instruction repeat count in case something else depends on this */
