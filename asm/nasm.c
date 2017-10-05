@@ -1593,11 +1593,9 @@ static void assemble_file(char *fname, StrList **depend_ptr)
 						{
 							insn padding_ins;
 							char* paddingInstruction = (char *) malloc(128);
-							globallineno--;
 							sprintf(paddingInstruction, "times %d nop", paddingRequired);
 							parse_line(pass1, paddingInstruction, &padding_ins, def_label);
 							process_non_directive_line(paddingInstruction, &offs, &padding_ins, &noop_ins, def_label);
-							globallineno++;
 						}
 					}
             	}
