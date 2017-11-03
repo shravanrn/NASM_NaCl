@@ -1198,16 +1198,34 @@ static insn* nacl_replace_instruction(insn* ins, int* count, bool* shouldFree)
 	{
 		int pass1 = 0;
 		*shouldFree = true;
-		*count = 3;
-		ret = (insn*) malloc(sizeof(insn) * (*count));
-        parse_line(pass1, "pop ecx", &(ret[0]), NULL /* label callback */);
-        parse_line(pass1, "and ecx,0xFFFFFFE0", &(ret[1]), NULL /* label callback */);
-        if(ins->opcode == I_RETN)
-        	parse_line(pass1, "jmp near ecx", &(ret[2]), NULL /* label callback */);
-        else if(ins->opcode == I_RETF)
-			parse_line(pass1, "jmp far ecx", &(ret[2]), NULL /* label callback */);
-        else if(ins->opcode == I_RET)
-			parse_line(pass1, "jmp ecx", &(ret[2]), NULL /* label callback */);
+
+        if(ofmt == &of_elf32)
+        {
+    		*count = 3;
+    		ret = (insn*) malloc(sizeof(insn) * (*count));
+            parse_line(pass1, "pop ecx", &(ret[0]), NULL /* label callback */);
+            parse_line(pass1, "and ecx,0xFFFFFFE0", &(ret[1]), NULL /* label callback */);
+            if(ins->opcode == I_RETN)
+            	parse_line(pass1, "jmp near ecx", &(ret[2]), NULL /* label callback */);
+            else if(ins->opcode == I_RETF)
+    			parse_line(pass1, "jmp far ecx", &(ret[2]), NULL /* label callback */);
+            else if(ins->opcode == I_RET)
+    			parse_line(pass1, "jmp ecx", &(ret[2]), NULL /* label callback */);
+        }
+        else if(ofmt == &of_elf64)
+        {
+            *count = 4;
+            ret = (insn*) malloc(sizeof(insn) * (*count));
+            parse_line(pass1, "pop r11", &(ret[0]), NULL /* label callback */);
+            parse_line(pass1, "and r11d,0xFFFFFFE0", &(ret[1]), NULL /* label callback */);
+            parse_line(pass1, "add r11,r15", &(ret[2]), NULL /* label callback */);
+            if(ins->opcode == I_RETN)
+                parse_line(pass1, "jmp near r11", &(ret[3]), NULL /* label callback */);
+            else if(ins->opcode == I_RETF)
+                parse_line(pass1, "jmp far r11", &(ret[3]), NULL /* label callback */);
+            else if(ins->opcode == I_RET)
+                parse_line(pass1, "jmp r11", &(ret[3]), NULL /* label callback */);
+        }
 	}
 	else
 	{
@@ -1221,7 +1239,7 @@ static insn* nacl_replace_instruction(insn* ins, int* count, bool* shouldFree)
 
 static int get_nacl_instruction_padding(int64_t offset, insn* output_ins, int64_t rawInstrSize)
 {
-	if(ofmt == &of_elf32)
+	if(ofmt == &of_elf32 || ofmt == &of_elf64)
 	{
 		if(rawInstrSize >= 32)
 		{
@@ -1268,7 +1286,7 @@ static int get_nacl_instruction_padding(int64_t offset, insn* output_ins, int64_
 	}
 	else
 	{
-		nasm_error(ERR_NONFATAL, "Boundary checks not supported in formats other than elf32");
+		nasm_error(ERR_NONFATAL, "Boundary checks not supported in formats other than elf32 or elf64");
 		return 0;
 	}
 }
