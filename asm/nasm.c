@@ -1190,19 +1190,157 @@ static void parse_cmdline(int argc, char **argv, int pass)
     }
 }
 
-static insn* nacl_replace_instruction(insn* ins, int* count, bool* shouldFree)
+static void nacl_scale_register(const char* regName, int scale, insn* out)
 {
-	insn* ret = NULL;
+	int pass1 = 0;
+	int shiftAmount = 0;
+	char instString[256];
 
-	if(ins->opcode == I_RET || ins->opcode == I_RETN || ins->opcode == I_RETF)
+	if(scale == 1)
 	{
-		int pass1 = 0;
-		*shouldFree = true;
+		return;
+	}
 
-        if(ofmt == &of_elf32)
-        {
+	switch (scale) {
+		case 2:
+			shiftAmount = 1;
+			break;
+		case 4:
+			shiftAmount = 2;
+			break;
+		case 8:
+			shiftAmount = 3;
+			break;
+		case 16:
+			shiftAmount = 4;
+			break;
+		case 32:
+			shiftAmount = 5;
+			break;
+		case 64:
+			shiftAmount = 6;
+			break;
+		default:
+			sprintf(instString, "imul %s,%d", regName, scale);
+		    parse_line(pass1, instString, out, NULL /* label callback */);
+			return;
+	}
+
+	sprintf(instString, "shl %s,%d", regName, shiftAmount);
+    parse_line(pass1, instString, out, NULL /* label callback */);
+}
+
+static void nacl_clear_64_bit_reg_top32(const char* registerToClear, insn* out)
+{
+	int pass1 = 0;
+	const char* loweredRegName;
+	char instString[256];
+
+	if(strcmp(registerToClear, "rax") == 0)	{ loweredRegName = "eax"; }
+	else if(strcmp(registerToClear, "rbx") == 0) { loweredRegName = "ebx"; }
+	else if(strcmp(registerToClear, "rcx") == 0) { loweredRegName = "ecx"; }
+	else if(strcmp(registerToClear, "rdx") == 0) { loweredRegName = "edx"; }
+	else if(strcmp(registerToClear, "rsi") == 0) { loweredRegName = "esi"; }
+	else if(strcmp(registerToClear, "rdi") == 0) { loweredRegName = "edi"; }
+	else if(strcmp(registerToClear, "rsi") == 0) { loweredRegName = "esi"; }
+	else if(strcmp(registerToClear, "rbp") == 0) { loweredRegName = "ebp"; }
+	else if(strcmp(registerToClear, "rsp") == 0) { nasm_fatal(0, "Unexpectedly clearing rsp\n"); }
+	else if(strcmp(registerToClear, "r8") == 0) { loweredRegName = "r8d"; }
+	else if(strcmp(registerToClear, "r9") == 0) { loweredRegName = "r9d"; }
+	else if(strcmp(registerToClear, "r10") == 0) { loweredRegName = "r10d"; }
+	else if(strcmp(registerToClear, "r11") == 0) { loweredRegName = "r11d"; }
+	else if(strcmp(registerToClear, "r12") == 0) { loweredRegName = "r12d"; }
+	else if(strcmp(registerToClear, "r13") == 0) { loweredRegName = "r13d"; }
+	else if(strcmp(registerToClear, "r14") == 0) { loweredRegName = "r14d"; }
+	else if(strcmp(registerToClear, "r15") == 0) { loweredRegName = "r15d"; }
+	else
+	{
+		nasm_fatal(0, "unknown 64 bit reg: %s\n", registerToClear);
+	}
+
+	sprintf(instString, "mov %s,%s", loweredRegName, loweredRegName);
+	parse_line(pass1, instString, out, NULL /* label callback */);
+}
+
+static bool nacl_use_register_as_scratch(const char* registerToCheck, const char* baseRegister)
+{
+	if(!registerToCheck || strlen(registerToCheck) == 0)
+	{
+		nasm_fatal(0, "nacl_use_register_as_scratch got null reg\n");
+	}
+
+	if(strcmp(registerToCheck, baseRegister) == 0)
+	{
+		return false;
+	}
+
+	if(strcmp(registerToCheck, "rax") == 0
+		|| strcmp(registerToCheck, "rbx") == 0
+		|| strcmp(registerToCheck, "rcx") == 0
+		|| strcmp(registerToCheck, "rdx") == 0
+		|| strcmp(registerToCheck, "rsi") == 0
+		|| strcmp(registerToCheck, "rdi") == 0
+		|| strcmp(registerToCheck, "rsi") == 0
+		|| strcmp(registerToCheck, "rbp") == 0
+		|| strcmp(registerToCheck, "r8") == 0
+		|| strcmp(registerToCheck, "r9") == 0
+		|| strcmp(registerToCheck, "r10") == 0
+		|| strcmp(registerToCheck, "r11") == 0
+		|| strcmp(registerToCheck, "r12") == 0
+		|| strcmp(registerToCheck, "r13") == 0
+		|| strcmp(registerToCheck, "r14") == 0
+	/* || strcmp(registerToCheck, "rsp") == 0 - not allowed */
+	/* || strcmp(registerToCheck, "r15") == 0 - not allowed */
+	)
+	{
+		return true;
+	}
+
+	return false;
+}
+
+static const char* nacl_gen_operand_size_modifier(const char* instrName, operand* op)
+{
+	if(strcmp(instrName, "movzx") == 0)
+	{
+		unsigned int opsize = ((op->type & SIZE_MASK) >> SIZE_SHIFT) * 8;
+	    switch(opsize)
+	    {
+			case 8:
+				return "BYTE";
+			case 16:
+				return "WORD";
+			case 32:
+				return "DWORD";
+			case 64:
+				return "QWORD";
+			case 80:
+				return "TWORD";
+			case 128:
+				return "OWORD";
+			case 256:
+				return "YWORD";
+			case 512:
+				return "ZWORD";
+			default:
+				nasm_fatal(0, "Unknown operand size type\n");
+	    }
+
+	}
+
+	return "";
+}
+
+static void nacl_replace_instruction(insn* ins, int* count, insn* ret)
+{
+	bool useDefault = false;
+	int pass1 = 0;
+
+    if(ofmt == &of_elf32)
+    {
+    	if(ins->opcode == I_RET || ins->opcode == I_RETN || ins->opcode == I_RETF)
+    	{
     		*count = 3;
-    		ret = (insn*) malloc(sizeof(insn) * (*count));
             parse_line(pass1, "pop ecx", &(ret[0]), NULL /* label callback */);
             parse_line(pass1, "and ecx,0xFFFFFFE0", &(ret[1]), NULL /* label callback */);
             if(ins->opcode == I_RETN)
@@ -1211,11 +1349,19 @@ static insn* nacl_replace_instruction(insn* ins, int* count, bool* shouldFree)
     			parse_line(pass1, "jmp far ecx", &(ret[2]), NULL /* label callback */);
             else if(ins->opcode == I_RET)
     			parse_line(pass1, "jmp ecx", &(ret[2]), NULL /* label callback */);
-        }
-        else if(ofmt == &of_elf64)
-        {
+            else
+                nasm_fatal(0, "unknown return type code\n");
+    	}
+    	else
+    	{
+    		useDefault = true;
+    	}
+    }
+    else if(ofmt == &of_elf64)
+    {
+    	if(ins->opcode == I_RET || ins->opcode == I_RETN || ins->opcode == I_RETF)
+    	{
             *count = 4;
-            ret = (insn*) malloc(sizeof(insn) * (*count));
             parse_line(pass1, "pop r11", &(ret[0]), NULL /* label callback */);
             parse_line(pass1, "and r11d,0xFFFFFFE0", &(ret[1]), NULL /* label callback */);
             parse_line(pass1, "add r11,r15", &(ret[2]), NULL /* label callback */);
@@ -1225,16 +1371,204 @@ static insn* nacl_replace_instruction(insn* ins, int* count, bool* shouldFree)
                 parse_line(pass1, "jmp far r11", &(ret[3]), NULL /* label callback */);
             else if(ins->opcode == I_RET)
                 parse_line(pass1, "jmp r11", &(ret[3]), NULL /* label callback */);
-        }
-	}
-	else
-	{
-		*shouldFree = false;
-		*count = 1;
-		ret = ins;
-	}
+    	}
+    	else if(ins->opcode == I_MOV && ins->operands == 2 && ins->oprs[0].basereg == R_RSP && ins->oprs[1].basereg == R_RBP)
+    	{
+    		/*restoring stack pointer*/
+    		*count = 2;
+    		parse_line(pass1, "mov esp,ebp", &(ret[0]), NULL /* label callback */);
+    		parse_line(pass1, "add rsp,r15", &(ret[1]), NULL /* label callback */);
+    	}
+    	else
+    	{
+			#define isOpOfType(op, ty) (!(ty & ~op.type))
+			#define isEAFlags(op, ea) (!(ea & ~op.eaflags))
+			#define isMemRSPBased(op) (op.basereg == R_RSP)
 
-	return ret;
+			if( isOpOfType(ins->oprs[0], MEMORY) && /*op0 is mem loc*/
+				!isMemRSPBased(ins->oprs[0]) &&  /*rsp has the full pointer so no change necessary*/
+				!isEAFlags(ins->oprs[0], EAF_REL) && /*ignore instr pointer relative addressing*/
+				isOpOfType(ins->oprs[1], REGISTER)) /*op1 is a register*/
+			{
+				const char* instrName;
+				const char* srcRegName;
+				const char* destBaseRegName;
+				int64_t destOffset;
+				char instStr[256];
+
+				instrName = nasm_insn_names[ins->opcode];
+				srcRegName = nasm_reg_names[ins->oprs[1].basereg-EXPR_REG_START];
+				destBaseRegName = nasm_reg_names[ins->oprs[0].basereg-EXPR_REG_START];
+				destOffset = ins->oprs[0].offset;
+
+				if(ins->oprs[0].indexreg != R_none)
+				{
+					bool destinationRegIsTemp;
+					const char* scratchRegister;
+					const char* operandSizeModifier;
+					const char* destIndexRegName = nasm_reg_names[ins->oprs[0].indexreg-EXPR_REG_START];
+					int destScale = ins->oprs[0].scale;
+
+					*count = 0;
+
+					destinationRegIsTemp = false;
+					/*destIndexRegName = ;
+					if(destinationRegIsTemp)
+					{
+						if(strcmp(scratchRegister, destIndexRegName) != 0)
+						{
+							sprintf(instStr, "mov %s, %s", scratchRegister, destIndexRegName);
+							*count = (*count) + 1;
+						}
+					}
+					else*/
+					{
+						scratchRegister = destIndexRegName;
+						sprintf(instStr, "push %s", destIndexRegName);
+						parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
+						*count = (*count) + 1;
+					}
+
+					if(destScale != 1)
+					{
+						nacl_scale_register(scratchRegister, destScale, &(ret[*count]));
+						*count = (*count) + 1;
+					}
+
+					if(ins->oprs[0].basereg != R_none)
+					{
+						sprintf(instStr, "add %s, %s", scratchRegister, destBaseRegName);
+						parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
+						*count = (*count) + 1;
+					}
+
+					nacl_clear_64_bit_reg_top32(scratchRegister, &(ret[*count]));
+					*count = (*count) + 1;
+
+					operandSizeModifier = nacl_gen_operand_size_modifier(instrName, &(ins->oprs[0]));
+					sprintf(instStr, "%s %s[r15+%s+%ld],%s", instrName, operandSizeModifier, destIndexRegName, destOffset, srcRegName);
+					parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
+					*count = (*count) + 1;
+
+					if(!destinationRegIsTemp)
+					{
+						sprintf(instStr, "pop %s", destIndexRegName);
+						parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
+						*count = (*count) + 1;
+					}
+				}
+				else
+				{
+					*count = 2;
+
+					nacl_clear_64_bit_reg_top32(destBaseRegName, &(ret[0]));
+
+					sprintf(instStr, "%s [r15+%s+%ld],%s", instrName, destBaseRegName, ins->oprs[0].offset, srcRegName);
+					parse_line(pass1, instStr, &(ret[1]), NULL /* label callback */);
+				}
+			}
+			else if(isOpOfType(ins->oprs[0], REGISTER) && /*op0 is a register*/
+					isOpOfType(ins->oprs[1], MEMORY) && /*op1 is mem loc*/
+					!isMemRSPBased(ins->oprs[1]) && /*rsp has the full pointer so no change necessary*/
+					!isEAFlags(ins->oprs[1], EAF_REL)) /*ignore instr pointer relative addressing*/
+			{
+				const char* instrName;
+				const char* srcBaseRegName;
+				int64_t srcOffset;
+				const char* destinationRegName;
+				char instStr[256];
+
+				instrName = nasm_insn_names[ins->opcode];
+				srcBaseRegName = nasm_reg_names[ins->oprs[1].basereg-EXPR_REG_START];
+				srcOffset = ins->oprs[1].offset;
+				destinationRegName = nasm_reg_names[ins->oprs[0].basereg-EXPR_REG_START];
+
+				if(ins->oprs[1].indexreg != R_none)
+				{
+					bool destinationRegIsTemp;
+					const char* scratchRegister;
+					const char* operandSizeModifier;
+					const char* srcIndexRegName = nasm_reg_names[ins->oprs[1].indexreg-EXPR_REG_START];
+					int srcScale = ins->oprs[1].scale;
+
+					*count = 0;
+
+					scratchRegister = destinationRegName;
+					destinationRegIsTemp = nacl_use_register_as_scratch(destinationRegName, srcBaseRegName);
+					if(destinationRegIsTemp)
+					{
+						if(strcmp(scratchRegister, srcIndexRegName) != 0)
+						{
+							sprintf(instStr, "mov %s, %s", scratchRegister, srcIndexRegName);
+							*count = (*count) + 1;
+						}
+					}
+					else
+					{
+						scratchRegister = srcIndexRegName;
+						sprintf(instStr, "push %s", srcIndexRegName);
+						parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
+						*count = (*count) + 1;
+					}
+
+					if(srcScale != 1)
+					{
+						nacl_scale_register(scratchRegister, srcScale, &(ret[*count]));
+						*count = (*count) + 1;
+					}
+
+					if(ins->oprs[1].basereg != R_none)
+					{
+						sprintf(instStr, "add %s, %s", scratchRegister, srcBaseRegName);
+						parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
+						*count = (*count) + 1;
+					}
+
+					nacl_clear_64_bit_reg_top32(scratchRegister, &(ret[*count]));
+					*count = (*count) + 1;
+
+					operandSizeModifier = nacl_gen_operand_size_modifier(instrName, &(ins->oprs[1]));
+					sprintf(instStr, "%s %s,%s[r15+%s+%ld]", instrName, destinationRegName, operandSizeModifier, scratchRegister, srcOffset);
+					parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
+					*count = (*count) + 1;
+
+					if(!destinationRegIsTemp)
+					{
+						sprintf(instStr, "pop %s", srcIndexRegName);
+						parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
+						*count = (*count) + 1;
+					}
+				}
+				else
+				{
+					*count = 2;
+
+					nacl_clear_64_bit_reg_top32(srcBaseRegName, &(ret[0]));
+
+					sprintf(instStr, "%s %s,[r15+%s+%ld]", instrName, destinationRegName, srcBaseRegName, srcOffset);
+					parse_line(pass1, instStr, &(ret[1]), NULL /* label callback */);
+				}
+			}
+			else
+			{
+				useDefault = true;
+			}
+
+			#undef isMemRSPBased
+			#undef isEAFlags
+			#undef isOpOfType
+    	}
+    }
+    else
+    {
+    	nasm_fatal(0, "unknown file format\n");
+    }
+
+    if(useDefault)
+    {
+		*count = 1;
+		ret[0] = *ins;
+    }
 }
 
 static int get_nacl_instruction_padding(int64_t offset, insn* output_ins, int64_t rawInstrSize)
@@ -1403,8 +1737,8 @@ static void process_non_directive_line(char *line, int64_t* offs, insn* output_i
 				if(instructionSize > 0)
 				{
 					int replaceCount;
-					bool shouldFree;
-					insn* replacedInstructions = nacl_replace_instruction(output_ins, &replaceCount, &shouldFree);
+					insn replacedInstructions[16];
+					nacl_replace_instruction(output_ins, &replaceCount, replacedInstructions);
 
 					/* Figure out the size of the instruction by computing the instruction size
 					*  multiplied by repeat count, accounting for padding required
@@ -1421,11 +1755,6 @@ static void process_non_directive_line(char *line, int64_t* offs, insn* output_i
 							l += currInstSize + paddingSize;
 							offsetCopy += currInstSize + paddingSize;
 						}
-					}
-
-					if(shouldFree)
-					{
-						free(replacedInstructions);
 					}
 				}
 				else
@@ -1541,8 +1870,8 @@ static void process_non_directive_line(char *line, int64_t* offs, insn* output_i
 
 					{
 						int replaceCount;
-						bool shouldFree;
-						insn* replacedInstructions = nacl_replace_instruction(output_ins, &replaceCount, &shouldFree);
+						insn replacedInstructions[16];
+						nacl_replace_instruction(output_ins, &replaceCount, replacedInstructions);
 
 						/* generate instructions as many times as necessary */
 						for(int32_t ignor = 0; ignor< timesCopy; ignor++)
@@ -1565,11 +1894,6 @@ static void process_non_directive_line(char *line, int64_t* offs, insn* output_i
 
 								*offs += assemble(location.segment, *offs, globalbits, &(replacedInstructions[i]));
 							}
-						}
-
-						if(shouldFree)
-						{
-							free(replacedInstructions);
 						}
 					}
 
@@ -1965,3 +2289,4 @@ static void usage(void)
 {
     fputs("type `nasm -h' for help\n", error_file);
 }
+
