@@ -6,3 +6,6 @@
 /nasm
 /ndisasm
 /.settings/
+/Makefile
+/config.status
+/config.log
