@@ -1190,52 +1190,13 @@ static void parse_cmdline(int argc, char **argv, int pass)
     }
 }
 
-static void nacl_scale_register(const char* regName, int scale, insn* out)
+#define isEAFlags(op, ea) (!(ea & ~op.eaflags))
+#define isOpOfType(op, ty) (!(ty & ~op.type))
+#define regName(reg) (nasm_reg_names[reg-EXPR_REG_START])
+
+static const char * nacl_get_32_bit_reg(const char* registerToClear)
 {
-	int pass1 = 0;
-	int shiftAmount = 0;
-	char instString[256];
-
-	if(scale == 1)
-	{
-		return;
-	}
-
-	switch (scale) {
-		case 2:
-			shiftAmount = 1;
-			break;
-		case 4:
-			shiftAmount = 2;
-			break;
-		case 8:
-			shiftAmount = 3;
-			break;
-		case 16:
-			shiftAmount = 4;
-			break;
-		case 32:
-			shiftAmount = 5;
-			break;
-		case 64:
-			shiftAmount = 6;
-			break;
-		default:
-			sprintf(instString, "imul %s,%d", regName, scale);
-		    parse_line(pass1, instString, out, NULL /* label callback */);
-			return;
-	}
-
-	sprintf(instString, "shl %s,%d", regName, shiftAmount);
-    parse_line(pass1, instString, out, NULL /* label callback */);
-}
-
-static void nacl_clear_64_bit_reg_top32(const char* registerToClear, insn* out)
-{
-	int pass1 = 0;
-	const char* loweredRegName;
-	char instString[256];
-
+	const char * loweredRegName;
 	if(strcmp(registerToClear, "rax") == 0)	{ loweredRegName = "eax"; }
 	else if(strcmp(registerToClear, "rbx") == 0) { loweredRegName = "ebx"; }
 	else if(strcmp(registerToClear, "rcx") == 0) { loweredRegName = "ecx"; }
@@ -1244,7 +1205,7 @@ static void nacl_clear_64_bit_reg_top32(const char* registerToClear, insn* out)
 	else if(strcmp(registerToClear, "rdi") == 0) { loweredRegName = "edi"; }
 	else if(strcmp(registerToClear, "rsi") == 0) { loweredRegName = "esi"; }
 	else if(strcmp(registerToClear, "rbp") == 0) { loweredRegName = "ebp"; }
-	else if(strcmp(registerToClear, "rsp") == 0) { nasm_fatal(0, "Unexpectedly clearing rsp\n"); }
+	else if(strcmp(registerToClear, "rsp") == 0) { loweredRegName = "esp"; }
 	else if(strcmp(registerToClear, "r8") == 0) { loweredRegName = "r8d"; }
 	else if(strcmp(registerToClear, "r9") == 0) { loweredRegName = "r9d"; }
 	else if(strcmp(registerToClear, "r10") == 0) { loweredRegName = "r10d"; }
@@ -1253,44 +1214,45 @@ static void nacl_clear_64_bit_reg_top32(const char* registerToClear, insn* out)
 	else if(strcmp(registerToClear, "r13") == 0) { loweredRegName = "r13d"; }
 	else if(strcmp(registerToClear, "r14") == 0) { loweredRegName = "r14d"; }
 	else if(strcmp(registerToClear, "r15") == 0) { loweredRegName = "r15d"; }
-	else
-	{
-		nasm_fatal(0, "unknown 64 bit reg: %s\n", registerToClear);
-	}
+	else { nasm_fatal(0, "unknown 64 bit reg: %s\n", registerToClear); }
+	return loweredRegName;
+}
+static void nacl_clear_64_bit_reg_top32(enum reg_enum registerToClear, insn* out)
+{
+	int pass1 = 0;
+	const char* loweredRegName;
+	char instString[256];
+
+	loweredRegName = nacl_get_32_bit_reg(regName(registerToClear));
 
 	sprintf(instString, "mov %s,%s", loweredRegName, loweredRegName);
 	parse_line(pass1, instString, out, NULL /* label callback */);
 }
 
-static bool nacl_use_register_as_scratch(const char* registerToCheck, const char* baseRegister)
+static bool nacl_use_register_as_scratch(enum reg_enum registerToCheck)
 {
-	if(!registerToCheck || strlen(registerToCheck) == 0)
+	if(registerToCheck == R_none)
 	{
 		nasm_fatal(0, "nacl_use_register_as_scratch got null reg\n");
 	}
 
-	if(strcmp(registerToCheck, baseRegister) == 0)
-	{
-		return false;
-	}
-
-	if(strcmp(registerToCheck, "rax") == 0
-		|| strcmp(registerToCheck, "rbx") == 0
-		|| strcmp(registerToCheck, "rcx") == 0
-		|| strcmp(registerToCheck, "rdx") == 0
-		|| strcmp(registerToCheck, "rsi") == 0
-		|| strcmp(registerToCheck, "rdi") == 0
-		|| strcmp(registerToCheck, "rsi") == 0
-		|| strcmp(registerToCheck, "rbp") == 0
-		|| strcmp(registerToCheck, "r8") == 0
-		|| strcmp(registerToCheck, "r9") == 0
-		|| strcmp(registerToCheck, "r10") == 0
-		|| strcmp(registerToCheck, "r11") == 0
-		|| strcmp(registerToCheck, "r12") == 0
-		|| strcmp(registerToCheck, "r13") == 0
-		|| strcmp(registerToCheck, "r14") == 0
-	/* || strcmp(registerToCheck, "rsp") == 0 - not allowed */
-	/* || strcmp(registerToCheck, "r15") == 0 - not allowed */
+	if(registerToCheck == R_RAX
+		|| registerToCheck == R_RBX
+		|| registerToCheck == R_RCX
+		|| registerToCheck == R_RDX
+		|| registerToCheck == R_RSI
+		|| registerToCheck == R_RDI
+		|| registerToCheck == R_RSI
+		|| registerToCheck == R_RBP
+		|| registerToCheck == R_R8
+		|| registerToCheck == R_R9
+		|| registerToCheck == R_R10
+		|| registerToCheck == R_R11
+		|| registerToCheck == R_R12
+		|| registerToCheck == R_R13
+		|| registerToCheck == R_R14
+		/* || registerToCheck == R_R15 - not allowed */
+		/* || registerToCheck == R_RSP - not allowed */
 	)
 	{
 		return true;
@@ -1331,16 +1293,53 @@ static const char* nacl_gen_operand_size_modifier(const char* instrName, operand
 	return "";
 }
 
-static void nacl_replace_instruction(insn* ins, int* count, insn* ret)
+static void get_memory_string_rep(enum reg_enum baseReg, enum reg_enum indexReg, int scale, int64_t offset, char *str)
+{
+	char baseRegExp[256];
+
+	if(baseReg != R_none)
+	{
+		sprintf(baseRegExp, "%s +", regName(baseReg));
+	}
+	else
+	{
+		baseRegExp[0] = '\0'; /* empty string */
+	}
+
+	if(indexReg == R_none)
+	{
+		sprintf(str, "[%s %ld]", baseRegExp, offset);
+	}
+	else
+	{
+		const char* indexRegStr = nasm_reg_names[indexReg-EXPR_REG_START];
+		sprintf(str, "[%s %s*%d + %ld]", baseRegExp, indexRegStr, scale, offset);
+	}
+}
+
+static void nacl_replace_instruction(insn* ins, int* count, insn* ret, bool* shouldBeInSameBlock)
 {
 	bool useDefault = false;
 	int pass1 = 0;
+
+	if(ofmt == &of_elf32 || ofmt == &of_elf64)
+	{
+    	if(ins->opcode == I_STOSB || ins->opcode == I_STOSD || ins->opcode == I_STOSQ || ins->opcode == I_STOSW
+    			|| ins->opcode == I_CPUID)
+    	{
+    		/* Some of these instructions could possibly be converted. They are rare enough that we just disallow */
+    		nasm_fatal(0, "NaCl conversion of %s not yet supported", nasm_insn_names[ins->opcode]);
+    	}
+	}
 
     if(ofmt == &of_elf32)
     {
     	if(ins->opcode == I_RET || ins->opcode == I_RETN || ins->opcode == I_RETF)
     	{
     		*count = 3;
+    		shouldBeInSameBlock[0] = false;
+    		shouldBeInSameBlock[1] = shouldBeInSameBlock[2] = true;
+
             parse_line(pass1, "pop ecx", &(ret[0]), NULL /* label callback */);
             parse_line(pass1, "and ecx,0xFFFFFFE0", &(ret[1]), NULL /* label callback */);
             if(ins->opcode == I_RETN)
@@ -1362,6 +1361,9 @@ static void nacl_replace_instruction(insn* ins, int* count, insn* ret)
     	if(ins->opcode == I_RET || ins->opcode == I_RETN || ins->opcode == I_RETF)
     	{
             *count = 4;
+    		shouldBeInSameBlock[0] = false;
+    		shouldBeInSameBlock[1] = shouldBeInSameBlock[2] = shouldBeInSameBlock[3] = true;
+
             parse_line(pass1, "pop r11", &(ret[0]), NULL /* label callback */);
             parse_line(pass1, "and r11d,0xFFFFFFE0", &(ret[1]), NULL /* label callback */);
             parse_line(pass1, "add r11,r15", &(ret[2]), NULL /* label callback */);
@@ -1372,192 +1374,316 @@ static void nacl_replace_instruction(insn* ins, int* count, insn* ret)
             else if(ins->opcode == I_RET)
                 parse_line(pass1, "jmp r11", &(ret[3]), NULL /* label callback */);
     	}
-    	else if(ins->opcode == I_MOV && ins->operands == 2 && ins->oprs[0].basereg == R_RSP && ins->oprs[1].basereg == R_RBP)
+    	else if(ins->opcode == I_POP && ins->oprs[0].basereg == R_RSP)
     	{
-    		/*restoring stack pointer*/
     		*count = 2;
-    		parse_line(pass1, "mov esp,ebp", &(ret[0]), NULL /* label callback */);
-    		parse_line(pass1, "add rsp,r15", &(ret[1]), NULL /* label callback */);
+			shouldBeInSameBlock[0] = shouldBeInSameBlock[1] = true;
+
+			parse_line(pass1, "mov esp,[rsp]", &(ret[0]), NULL /* label callback */);
+			parse_line(pass1, "add rsp,r15", &(ret[1]), NULL /* label callback */);
     	}
-    	else
+    	else if(ins->opcode == I_POP && ins->oprs[0].basereg == R_RBP)
     	{
-			#define isOpOfType(op, ty) (!(ty & ~op.type))
-			#define isEAFlags(op, ea) (!(ea & ~op.eaflags))
-			#define isMemRSPBased(op) (op.basereg == R_RSP)
+    		*count = 4;
+    		shouldBeInSameBlock[0] = shouldBeInSameBlock[1] = true;
+			shouldBeInSameBlock[2] = shouldBeInSameBlock[3] = true;
 
-			if( isOpOfType(ins->oprs[0], MEMORY) && /*op0 is mem loc*/
-				!isMemRSPBased(ins->oprs[0]) &&  /*rsp has the full pointer so no change necessary*/
-				!isEAFlags(ins->oprs[0], EAF_REL) && /*ignore instr pointer relative addressing*/
-				isOpOfType(ins->oprs[1], REGISTER)) /*op1 is a register*/
+			parse_line(pass1, "mov ebp,[rsp]", &(ret[0]), NULL /* label callback */);
+			parse_line(pass1, "add rbp,r15", &(ret[1]), NULL /* label callback */);
+			parse_line(pass1, "add esp,8", &(ret[2]), NULL /* label callback */);
+			parse_line(pass1, "add rsp,r15", &(ret[3]), NULL /* label callback */);
+    	}
+    	else if(ins->opcode == I_PREFETCH || ins->opcode == I_PREFETCHNTA ||
+			ins->opcode == I_PREFETCHT0 || ins->opcode == I_PREFETCHT1 ||
+			ins->opcode == I_PREFETCHT2 || ins->opcode == I_PREFETCHW ||
+			ins->opcode == I_PREFETCHWT1
+		)
+    	{
+    		if(ins->oprs[0].indexreg == R_none)
+    		{
+    			char instStr[256];
+    			char memoryStringRep[256];
+    			const char* instrName;
+
+        		*count = 2;
+        		/*this instruction does not modify memory so the top 32 bits clear does not need to be adjacent*/
+        		shouldBeInSameBlock[0] = shouldBeInSameBlock[1] = false;
+
+    			instrName = nasm_insn_names[ins->opcode];
+
+        		nacl_clear_64_bit_reg_top32(ins->oprs[0].basereg, &(ret[0]));
+
+        		get_memory_string_rep(R_R15, ins->oprs[0].basereg, 1 /* scale */, ins->oprs[0].offset, memoryStringRep);
+        		sprintf(instStr, "%s %s", instrName, memoryStringRep);
+    			parse_line(pass1, instStr, &(ret[1]), NULL /* label callback */);
+    		}
+    		else
+    		{
+    			/* prefetchnta that uses SIB scaling
+				Not seeing anything like this for now so not building the conversion
+				If needed, this should be easy enough to do
+				This doesn't affect correctness - only perf, so ignoring
+				*/
+    			nasm_error(ERR_WARNING, "NaCl conversion of prefetch instructions that use SIB addressing not yet supported\n");
+    		}
+    	}
+    	else if(ins->operands == 1 && isOpOfType(ins->oprs[0], MEMORY))
+    	{
+    		/* one op instructions that modify memory
+    		Not seeing anything like this for now so not building the conversion
+    		If needed, this should be easy enough to do */
+    		nasm_fatal(0, "NaCl conversion of Single instructions that access memory not yet supported");
+    	}
+    	else if(ins->operands == 2 && isOpOfType(ins->oprs[0], REGISTER) && ins->oprs[0].basereg == R_RSP)
+    	{
+    		/*some manipulation of rsp - should go through esp*/
+			char instStr[256];
+			const char* instrName;
+
+			*count = 2;
+    		shouldBeInSameBlock[0] = shouldBeInSameBlock[1] = true;
+
+			instrName = nasm_insn_names[ins->opcode];
+
+			if(isOpOfType(ins->oprs[1], IMMEDIATE))
 			{
-				const char* instrName;
-				const char* srcRegName;
-				const char* destBaseRegName;
-				int64_t destOffset;
-				char instStr[256];
-
-				instrName = nasm_insn_names[ins->opcode];
-				srcRegName = nasm_reg_names[ins->oprs[1].basereg-EXPR_REG_START];
-				destBaseRegName = nasm_reg_names[ins->oprs[0].basereg-EXPR_REG_START];
-				destOffset = ins->oprs[0].offset;
-
-				if(ins->oprs[0].indexreg != R_none)
-				{
-					bool destinationRegIsTemp;
-					const char* scratchRegister;
-					const char* operandSizeModifier;
-					const char* destIndexRegName = nasm_reg_names[ins->oprs[0].indexreg-EXPR_REG_START];
-					int destScale = ins->oprs[0].scale;
-
-					*count = 0;
-
-					destinationRegIsTemp = false;
-					/*destIndexRegName = ;
-					if(destinationRegIsTemp)
-					{
-						if(strcmp(scratchRegister, destIndexRegName) != 0)
-						{
-							sprintf(instStr, "mov %s, %s", scratchRegister, destIndexRegName);
-							*count = (*count) + 1;
-						}
-					}
-					else*/
-					{
-						scratchRegister = destIndexRegName;
-						sprintf(instStr, "push %s", destIndexRegName);
-						parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
-						*count = (*count) + 1;
-					}
-
-					if(destScale != 1)
-					{
-						nacl_scale_register(scratchRegister, destScale, &(ret[*count]));
-						*count = (*count) + 1;
-					}
-
-					if(ins->oprs[0].basereg != R_none)
-					{
-						sprintf(instStr, "add %s, %s", scratchRegister, destBaseRegName);
-						parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
-						*count = (*count) + 1;
-					}
-
-					nacl_clear_64_bit_reg_top32(scratchRegister, &(ret[*count]));
-					*count = (*count) + 1;
-
-					operandSizeModifier = nacl_gen_operand_size_modifier(instrName, &(ins->oprs[0]));
-					sprintf(instStr, "%s %s[r15+%s+%ld],%s", instrName, operandSizeModifier, destIndexRegName, destOffset, srcRegName);
-					parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
-					*count = (*count) + 1;
-
-					if(!destinationRegIsTemp)
-					{
-						sprintf(instStr, "pop %s", destIndexRegName);
-						parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
-						*count = (*count) + 1;
-					}
-				}
-				else
-				{
-					*count = 2;
-
-					nacl_clear_64_bit_reg_top32(destBaseRegName, &(ret[0]));
-
-					sprintf(instStr, "%s [r15+%s+%ld],%s", instrName, destBaseRegName, ins->oprs[0].offset, srcRegName);
-					parse_line(pass1, instStr, &(ret[1]), NULL /* label callback */);
-				}
+				sprintf(instStr, "%s esp,%ld", instrName, ins->oprs[1].offset);
 			}
-			else if(isOpOfType(ins->oprs[0], REGISTER) && /*op0 is a register*/
-					isOpOfType(ins->oprs[1], MEMORY) && /*op1 is mem loc*/
-					!isMemRSPBased(ins->oprs[1]) && /*rsp has the full pointer so no change necessary*/
-					!isEAFlags(ins->oprs[1], EAF_REL)) /*ignore instr pointer relative addressing*/
+			else if(isOpOfType(ins->oprs[1], REGISTER))
 			{
-				const char* instrName;
-				const char* srcBaseRegName;
-				int64_t srcOffset;
-				const char* destinationRegName;
-				char instStr[256];
+				const char* loweredReg = nacl_get_32_bit_reg(regName(ins->oprs[1].basereg));
+				sprintf(instStr, "%s esp,%s", instrName, loweredReg);
+			}
+			else if(isOpOfType(ins->oprs[1], MEMORY))
+			{
+				char memoryStringRep[256];
+				get_memory_string_rep(ins->oprs[1].basereg, ins->oprs[1].indexreg, ins->oprs[1].scale, ins->oprs[1].offset, memoryStringRep);
 
-				instrName = nasm_insn_names[ins->opcode];
-				srcBaseRegName = nasm_reg_names[ins->oprs[1].basereg-EXPR_REG_START];
-				srcOffset = ins->oprs[1].offset;
-				destinationRegName = nasm_reg_names[ins->oprs[0].basereg-EXPR_REG_START];
-
-				if(ins->oprs[1].indexreg != R_none)
-				{
-					bool destinationRegIsTemp;
-					const char* scratchRegister;
-					const char* operandSizeModifier;
-					const char* srcIndexRegName = nasm_reg_names[ins->oprs[1].indexreg-EXPR_REG_START];
-					int srcScale = ins->oprs[1].scale;
-
-					*count = 0;
-
-					scratchRegister = destinationRegName;
-					destinationRegIsTemp = nacl_use_register_as_scratch(destinationRegName, srcBaseRegName);
-					if(destinationRegIsTemp)
-					{
-						if(strcmp(scratchRegister, srcIndexRegName) != 0)
-						{
-							sprintf(instStr, "mov %s, %s", scratchRegister, srcIndexRegName);
-							*count = (*count) + 1;
-						}
-					}
-					else
-					{
-						scratchRegister = srcIndexRegName;
-						sprintf(instStr, "push %s", srcIndexRegName);
-						parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
-						*count = (*count) + 1;
-					}
-
-					if(srcScale != 1)
-					{
-						nacl_scale_register(scratchRegister, srcScale, &(ret[*count]));
-						*count = (*count) + 1;
-					}
-
-					if(ins->oprs[1].basereg != R_none)
-					{
-						sprintf(instStr, "add %s, %s", scratchRegister, srcBaseRegName);
-						parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
-						*count = (*count) + 1;
-					}
-
-					nacl_clear_64_bit_reg_top32(scratchRegister, &(ret[*count]));
-					*count = (*count) + 1;
-
-					operandSizeModifier = nacl_gen_operand_size_modifier(instrName, &(ins->oprs[1]));
-					sprintf(instStr, "%s %s,%s[r15+%s+%ld]", instrName, destinationRegName, operandSizeModifier, scratchRegister, srcOffset);
-					parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
-					*count = (*count) + 1;
-
-					if(!destinationRegIsTemp)
-					{
-						sprintf(instStr, "pop %s", srcIndexRegName);
-						parse_line(pass1, instStr, &(ret[*count]), NULL /* label callback */);
-						*count = (*count) + 1;
-					}
-				}
-				else
-				{
-					*count = 2;
-
-					nacl_clear_64_bit_reg_top32(srcBaseRegName, &(ret[0]));
-
-					sprintf(instStr, "%s %s,[r15+%s+%ld]", instrName, destinationRegName, srcBaseRegName, srcOffset);
-					parse_line(pass1, instStr, &(ret[1]), NULL /* label callback */);
-				}
+				sprintf(instStr, "%s esp,%s", instrName, memoryStringRep);
 			}
 			else
 			{
-				useDefault = true;
+				nasm_fatal(0, "Unexpected operand type in rsp manipulation\n");
 			}
 
-			#undef isMemRSPBased
-			#undef isEAFlags
-			#undef isOpOfType
+			parse_line(pass1, instStr, &(ret[0]), NULL /* label callback */);
+			parse_line(pass1, "add rsp,r15", &(ret[1]), NULL /* label callback */);
     	}
+    	else if(
+			ins->opcode != I_LEA && /* lea instructions look like memory ops but they arent*/
+			isOpOfType(ins->oprs[0], MEMORY) && /*dest is mem loc*/
+			ins->oprs[0].basereg != R_RSP && /*dest referred to by rsp which has the full pointer so no change necessary*/
+			ins->oprs[0].basereg != R_RBP  &&  /*dest referred to by rbp which has the full pointer so no change necessary*/
+			!isEAFlags(ins->oprs[0], EAF_REL) && /*ignore instr pointer relative addressing*/
+			isOpOfType(ins->oprs[1], REGISTER) && /*src is a register*/
+			ins->oprs[0].indexreg == R_none && ins->oprs[0].offset >= 0 /* easy case - does not use SIB addressing and positive offset */
+    	)
+    	{
+    		char instStr[256];
+    		char memoryStringRep[256];
+    		const char* instrName;
+
+			enum reg_enum srcReg;
+			enum reg_enum destBaseReg;
+			int64_t destOffset;
+
+			instrName = nasm_insn_names[ins->opcode];
+			srcReg = ins->oprs[1].basereg;
+			destBaseReg = ins->oprs[0].basereg;
+			destOffset = ins->oprs[0].offset;
+
+			*count = 2;
+			shouldBeInSameBlock[0] = shouldBeInSameBlock[1] = true;
+
+			nacl_clear_64_bit_reg_top32(destBaseReg, &(ret[0]));
+
+			get_memory_string_rep(R_R15, destBaseReg, 1 /* scale */, destOffset, memoryStringRep);
+			sprintf(instStr, "%s %s,%s", instrName, memoryStringRep, regName(srcReg));
+			parse_line(pass1, instStr, &(ret[1]), NULL /* label callback */);
+    	}
+    	else if(
+			ins->opcode != I_LEA && /* lea instructions look like memory ops but they arent*/
+			isOpOfType(ins->oprs[0], REGISTER) && /*dest is a register*/
+			isOpOfType(ins->oprs[1], MEMORY) && /*src is mem loc*/
+			ins->oprs[1].basereg != R_RSP && /*src referred to by rsp which has the full pointer so no change necessary*/
+			ins->oprs[1].basereg != R_RBP  &&  /*src referred to by rbp which has the full pointer so no change necessary*/
+			!isEAFlags(ins->oprs[1], EAF_REL) && /*ignore instr pointer relative addressing*/
+			ins->oprs[1].indexreg == R_none && ins->oprs[1].offset >= 0 /* easy case - does not use SIB addressing and positive offset */
+		)
+    	{
+    		char instStr[256];
+    		char memoryStringRep[256];
+    		const char* instrName;
+
+			enum reg_enum srcBaseReg;
+			int64_t srcOffset;
+			enum reg_enum destReg;
+
+			instrName = nasm_insn_names[ins->opcode];
+			srcBaseReg = ins->oprs[1].basereg;
+			srcOffset = ins->oprs[1].offset;
+			destReg = ins->oprs[0].basereg;
+
+			*count = 2;
+			shouldBeInSameBlock[0] = shouldBeInSameBlock[1] = true;
+
+			nacl_clear_64_bit_reg_top32(srcBaseReg, &(ret[0]));
+
+			get_memory_string_rep(R_R15, srcBaseReg, 1 /* scale */, srcOffset, memoryStringRep);
+			sprintf(instStr, "%s %s,%s", instrName, regName(destReg), memoryStringRep);
+			parse_line(pass1, instStr, &(ret[1]), NULL /* label callback */);
+    	}
+    	else if(
+			/*like before but uses SIB addressing or negative offset*/
+			ins->opcode != I_LEA && /* lea instructions look like memory ops but they arent*/
+			isOpOfType(ins->oprs[0], MEMORY) && /*dest is mem loc*/
+			ins->oprs[0].basereg != R_RSP && /*dest referred to by rsp which has the full pointer so no change necessary*/
+			ins->oprs[0].basereg != R_RBP  &&  /*dest referred to by rbp which has the full pointer so no change necessary*/
+			!isEAFlags(ins->oprs[0], EAF_REL) && /*ignore instr pointer relative addressing*/
+			isOpOfType(ins->oprs[1], REGISTER)/*src is a register*/
+    	)
+    	{
+    		char instStr[256];
+    		char memoryStringRep[256];
+    		const char* instrName;
+
+			enum reg_enum srcReg;
+			enum reg_enum destBaseReg;
+			enum reg_enum destIndexReg;
+			int64_t destOffset;
+			int destScale;
+			enum reg_enum scratchReg;
+			const char* operandSizeModifier;
+
+			instrName = nasm_insn_names[ins->opcode];
+			srcReg = ins->oprs[1].basereg;
+			destBaseReg = ins->oprs[0].basereg;
+			destIndexReg = ins->oprs[0].indexreg;
+			destOffset = ins->oprs[0].offset;
+			destScale = ins->oprs[0].scale;
+
+			*count = 5;
+			shouldBeInSameBlock[0] = shouldBeInSameBlock[1] = false;
+			shouldBeInSameBlock[2] = shouldBeInSameBlock[3] = true;
+			shouldBeInSameBlock[4] = false;
+
+			/* find a scratch register to compute the right address */
+			if(destIndexReg != R_none && destIndexReg != R_R15 && destIndexReg != R_RSP && destIndexReg != R_RBP)
+			{
+				scratchReg = destIndexReg;
+			}
+			else
+			{
+				/* pick a scratch register at random */
+				scratchReg = R_R14;
+			}
+
+			sprintf(instStr, "push %s", regName(scratchReg));
+			parse_line(pass1, instStr, &(ret[0]), NULL /* label callback */);
+
+			get_memory_string_rep(destBaseReg, destIndexReg, destScale, destOffset, memoryStringRep);
+			sprintf(instStr, "lea %s,%s", regName(scratchReg), memoryStringRep);
+			parse_line(pass1, instStr, &(ret[1]), NULL /* label callback */);
+
+			nacl_clear_64_bit_reg_top32(scratchReg, &(ret[2]));
+
+			operandSizeModifier = nacl_gen_operand_size_modifier(instrName, &(ins->oprs[0]));
+			sprintf(instStr, "%s %s[r15 + %s],%s", instrName, operandSizeModifier, regName(scratchReg), regName(srcReg));
+			parse_line(pass1, instStr, &(ret[3]), NULL /* label callback */);
+
+			sprintf(instStr, "pop %s", regName(scratchReg));
+			parse_line(pass1, instStr, &(ret[4]), NULL /* label callback */);
+    	}
+    	else if(
+			/*like before but uses SIB addressing or negative offset*/
+			ins->opcode != I_LEA && /* lea instructions look like memory ops but they arent*/
+			isOpOfType(ins->oprs[0], REGISTER) && /*dest is a register*/
+			isOpOfType(ins->oprs[1], MEMORY) && /*src is mem loc*/
+			ins->oprs[1].basereg != R_RSP && /*src referred to by rsp which has the full pointer so no change necessary*/
+			ins->oprs[1].basereg != R_RBP  &&  /*src referred to by rbp which has the full pointer so no change necessary*/
+			!isEAFlags(ins->oprs[1], EAF_REL)/*ignore instr pointer relative addressing*/
+		)
+    	{
+    		char instStr[256];
+    		char memoryStringRep[256];
+    		const char* instrName;
+
+			enum reg_enum srcBaseReg;
+			enum reg_enum srcIndexReg;
+			int64_t srcOffset;
+			int srcScale;
+			enum reg_enum destReg;
+			bool destinationRegIsTemp;
+			enum reg_enum scratchReg;
+			const char* operandSizeModifier;
+
+			instrName = nasm_insn_names[ins->opcode];
+			srcBaseReg = ins->oprs[1].basereg;
+			srcIndexReg = ins->oprs[1].indexreg;
+			srcOffset = ins->oprs[1].offset;
+			srcScale = ins->oprs[1].scale;
+			destReg = ins->oprs[0].basereg;
+
+			destinationRegIsTemp = nacl_use_register_as_scratch(destReg);
+
+			/* find a scratch register to compute the right address */
+			if(destinationRegIsTemp)
+			{
+				*count = 3;
+				shouldBeInSameBlock[0] = false;
+				shouldBeInSameBlock[1] = shouldBeInSameBlock[2] = true;
+				scratchReg = destReg;
+			}
+			else
+			{
+				*count = 5;
+				shouldBeInSameBlock[0] = shouldBeInSameBlock[1] = false;
+				shouldBeInSameBlock[2] = shouldBeInSameBlock[3] = true;
+				shouldBeInSameBlock[4] = false;
+
+				if(srcIndexReg != R_none && srcIndexReg != R_R15 && srcIndexReg != R_RSP && srcIndexReg != R_RBP)
+				{
+					scratchReg = srcIndexReg;
+				}
+				else if(srcBaseReg != R_none && srcBaseReg != R_R15 && srcBaseReg != R_RSP && srcBaseReg != R_RBP)
+				{
+					scratchReg = srcBaseReg;
+				}
+				else
+				{
+					/* pick a scratch register at random */
+					scratchReg = R_R14;
+				}
+
+				sprintf(instStr, "push %s", regName(scratchReg));
+				parse_line(pass1, instStr, &(ret[0]), NULL /* label callback */);
+
+				/* if we increment ret here instructions after the branch can start writing to base of ret
+				   independent of whether we came through the if or else */
+				ret++;
+			}
+
+
+			get_memory_string_rep(srcBaseReg, srcIndexReg, srcScale, srcOffset, memoryStringRep);
+			sprintf(instStr, "lea %s,%s", regName(scratchReg), memoryStringRep);
+			parse_line(pass1, instStr, &(ret[0]), NULL /* label callback */);
+
+			nacl_clear_64_bit_reg_top32(scratchReg, &(ret[1]));
+
+			operandSizeModifier = nacl_gen_operand_size_modifier(instrName, &(ins->oprs[1]));
+			sprintf(instStr, "%s %s,%s[r15 + %s]", instrName, regName(destReg), operandSizeModifier, regName(scratchReg));
+			parse_line(pass1, instStr, &(ret[2]), NULL /* label callback */);
+
+			if(!destinationRegIsTemp)
+			{
+				sprintf(instStr, "pop %s", regName(scratchReg));
+				parse_line(pass1, instStr, &(ret[3]), NULL /* label callback */);
+			}
+    	}
+		else
+		{
+			useDefault = true;
+		}
     }
     else
     {
@@ -1567,17 +1693,24 @@ static void nacl_replace_instruction(insn* ins, int* count, insn* ret)
     if(useDefault)
     {
 		*count = 1;
+		shouldBeInSameBlock[0] = false;
 		ret[0] = *ins;
     }
 }
 
-static int get_nacl_instruction_padding(int64_t offset, insn* output_ins, int64_t rawInstrSize)
+static int get_nacl_instruction_padding(int64_t offset, int minSpaceInCurrBlock, insn* output_ins, int64_t rawInstrSize)
 {
 	if(ofmt == &of_elf32 || ofmt == &of_elf64)
 	{
 		if(rawInstrSize >= 32)
 		{
 			nasm_error(ERR_NONFATAL, "Instruction size greater than 32");
+			return 0;
+		}
+
+		if(minSpaceInCurrBlock > 32)
+		{
+			nasm_error(ERR_NONFATAL, "More than 32 bytes of instructions that can't be separated");
 			return 0;
 		}
 
@@ -1591,6 +1724,13 @@ static int get_nacl_instruction_padding(int64_t offset, insn* output_ins, int64_
 			int previousFinishOffset = (offset + 31) % 32;
 			/* Values from 0 to 31 */
 			int currentStartOffset = (previousFinishOffset + 1) % 32;
+
+			/* Values from 1 to 32 */
+			int remainingSpace = 32 - currentStartOffset;
+			if(minSpaceInCurrBlock > remainingSpace)
+			{
+				return remainingSpace;
+			}
 
 			if(output_ins->opcode == I_CALL)
 			{
@@ -1738,7 +1878,8 @@ static void process_non_directive_line(char *line, int64_t* offs, insn* output_i
 				{
 					int replaceCount;
 					insn replacedInstructions[16];
-					nacl_replace_instruction(output_ins, &replaceCount, replacedInstructions);
+					bool shouldBeInSameBlock[16];
+					nacl_replace_instruction(output_ins, &replaceCount, replacedInstructions, shouldBeInSameBlock);
 
 					/* Figure out the size of the instruction by computing the instruction size
 					*  multiplied by repeat count, accounting for padding required
@@ -1748,10 +1889,22 @@ static void process_non_directive_line(char *line, int64_t* offs, insn* output_i
 					{
 						for(int i = 0; i < replaceCount; i++)
 						{
+							int64_t currInstSize;
 							int paddingSize;
+							int minSpaceInCurrBlock = 0;
 
-							int64_t currInstSize = insn_size(location.segment, offsetCopy, globalbits, &(replacedInstructions[i]));
-							paddingSize = get_nacl_instruction_padding(offsetCopy, &(replacedInstructions[i]), currInstSize);
+							for(int j = i; j < replaceCount; j++)
+							{
+								if(!shouldBeInSameBlock[i])
+								{
+									break;
+								}
+
+								minSpaceInCurrBlock += insn_size(location.segment, offsetCopy, globalbits, &(replacedInstructions[j]));
+							}
+
+							currInstSize = insn_size(location.segment, offsetCopy, globalbits, &(replacedInstructions[i]));
+							paddingSize = get_nacl_instruction_padding(offsetCopy, minSpaceInCurrBlock, &(replacedInstructions[i]), currInstSize);
 							l += currInstSize + paddingSize;
 							offsetCopy += currInstSize + paddingSize;
 						}
@@ -1871,7 +2024,8 @@ static void process_non_directive_line(char *line, int64_t* offs, insn* output_i
 					{
 						int replaceCount;
 						insn replacedInstructions[16];
-						nacl_replace_instruction(output_ins, &replaceCount, replacedInstructions);
+						bool shouldBeInSameBlock[16];
+						nacl_replace_instruction(output_ins, &replaceCount, replacedInstructions, shouldBeInSameBlock);
 
 						/* generate instructions as many times as necessary */
 						for(int32_t ignor = 0; ignor< timesCopy; ignor++)
@@ -1881,10 +2035,22 @@ static void process_non_directive_line(char *line, int64_t* offs, insn* output_i
 								/* If the instruction doesn't fit before the next 32 byte boundary,
 								*  this function gives the amount of padding required
 								*/
+								int64_t currInstSize;
 								int paddingSize;
+								int minSpaceInCurrBlock = 0;
 
-								int64_t currInstSize = insn_size(location.segment, *offs, globalbits, &(replacedInstructions[i]));
-								paddingSize = get_nacl_instruction_padding(*offs, &(replacedInstructions[i]), currInstSize);
+								for(int j = i; j < replaceCount; j++)
+								{
+									if(!shouldBeInSameBlock[i])
+									{
+										break;
+									}
+
+									minSpaceInCurrBlock += insn_size(location.segment, *offs, globalbits, &(replacedInstructions[j]));
+								}
+
+								currInstSize = insn_size(location.segment, *offs, globalbits, &(replacedInstructions[i]));
+								paddingSize = get_nacl_instruction_padding(*offs, minSpaceInCurrBlock, &(replacedInstructions[i]), currInstSize);
 
 								/* assemble the appropriate amount of noop instructions */
 								for(int j = 0; j < paddingSize; j++)
