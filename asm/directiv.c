@@ -252,7 +252,14 @@ bool process_directives(char *directive)
             tokval.t_type = TOKEN_INVALID;
             e = evaluate(stdscan, NULL, &tokval, NULL, pass2, NULL);
             if (e) {
-                uint64_t align = e->value;
+                uint64_t align;
+
+                if(nacl_mode && e->value < 32)
+                {
+                	e->value = 32;
+                }
+
+				align = e->value;
 
 		if (!is_power2(e->value)) {
                     nasm_error(ERR_NONFATAL,
