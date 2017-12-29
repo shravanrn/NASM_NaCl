@@ -1322,16 +1322,6 @@ static void nacl_replace_instruction(insn* ins, int* count, insn* ret, bool* sho
 	bool useDefault = false;
 	int pass1 = 0;
 
-	if(ofmt == &of_elf32 || ofmt == &of_elf64)
-	{
-    	if(ins->opcode == I_STOSB || ins->opcode == I_STOSD || ins->opcode == I_STOSQ || ins->opcode == I_STOSW
-    			|| ins->opcode == I_CPUID)
-    	{
-    		/* Some of these instructions could possibly be converted. They are rare enough that we just disallow */
-    		nasm_fatal(0, "NaCl conversion of %s not yet supported", nasm_insn_names[ins->opcode]);
-    	}
-	}
-
     if(ofmt == &of_elf32)
     {
     	if(ins->opcode == I_RET || ins->opcode == I_RETN || ins->opcode == I_RETF)
@@ -1358,7 +1348,16 @@ static void nacl_replace_instruction(insn* ins, int* count, insn* ret, bool* sho
     }
     else if(ofmt == &of_elf64)
     {
-    	if(ins->opcode == I_RET || ins->opcode == I_RETN || ins->opcode == I_RETF)
+    	if(ins->opcode == I_STOSB || ins->opcode == I_STOSD || ins->opcode == I_STOSQ || ins->opcode == I_STOSW)
+    	{
+    		*count = 3;
+    		shouldBeInSameBlock[0] = shouldBeInSameBlock[1] = shouldBeInSameBlock[2] = true;
+
+    		parse_line(pass1, "mov edi,edi", &(ret[0]), NULL /* label callback */);
+    		parse_line(pass1, "lea rdi,[r15+rdi]", &(ret[1]), NULL /* label callback */);
+    		ret[2] = *ins;
+    	}
+    	else if(ins->opcode == I_RET || ins->opcode == I_RETN || ins->opcode == I_RETF)
     	{
             *count = 4;
     		shouldBeInSameBlock[0] = false;
@@ -2144,6 +2143,23 @@ static void assemble_file(char *fname, StrList **depend_ptr)
              * Here we parse our directives; this is not handled by the
              * main parser.
              */
+
+            if(nacl_mode && parse_check_is_label(line) && !is_local_label(line))
+            {
+				/* if label is not aligned, align it */
+				int paddingRequired = (32 - (offs % 32)) %32;
+
+				if(paddingRequired > 0)
+				{
+					insn padding_ins;
+					char paddingInstruction[128];
+
+					sprintf(paddingInstruction, "times %d nop", paddingRequired);
+					parse_line(pass1, paddingInstruction, &padding_ins, def_label);
+					process_non_directive_line(paddingInstruction, &offs, &padding_ins, &noop_ins, def_label);
+				}
+            }
+
             if (process_directives(line))
             {
 				nasm_free(line);
@@ -2151,33 +2167,6 @@ static void assemble_file(char *fname, StrList **depend_ptr)
             }
             else
             {
-				/* Not a directive, or even something that starts with [ */
-            	if(nacl_mode)
-            	{
-            		bool isLabel = parse_check_is_label(line);
-
-					if(isLabel &&
-						/* output_ins.opcode == I_none && output_ins.label != NULL && output_ins.label[0] != '\0' && */
-						offs % 32 != 0)
-					{
-						/* if label is not align it, align it */
-						int paddingRequired = 32 - (offs % 32);
-						if(paddingRequired <= 0 || paddingRequired >= 32)
-						{
-							nasm_error(ERR_NONFATAL,
-									   "unexpected padding amount");
-						}
-						else
-						{
-							insn padding_ins;
-							char* paddingInstruction = (char *) malloc(128);
-							sprintf(paddingInstruction, "times %d nop", paddingRequired);
-							parse_line(pass1, paddingInstruction, &padding_ins, def_label);
-							process_non_directive_line(paddingInstruction, &offs, &padding_ins, &noop_ins, def_label);
-						}
-					}
-            	}
-
 				parse_line(pass1, line, &output_ins, def_label);
 				process_non_directive_line(line, &offs, &output_ins, &noop_ins, def_label);
             }

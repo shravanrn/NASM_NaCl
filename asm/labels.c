@@ -420,6 +420,11 @@ void declare_as_global(char *label, char *special)
     }
 }
 
+bool is_local_label(char* label)
+{
+	return islocal(label);
+}
+
 int init_labels(void)
 {
     hash_init(&ltab, HASH_LARGE);

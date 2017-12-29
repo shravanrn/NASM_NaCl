@@ -238,6 +238,10 @@ bool process_directives(char *directive)
         } else {
             in_absolute = false;
             location.segment = seg;
+            if(nacl_mode)
+            {
+            	ofmt->sectalign(location.segment, 32);
+            }
         }
         break;
     }

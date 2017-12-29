@@ -51,6 +51,7 @@ void redefine_label(char *label, int32_t segment, int64_t offset, char *special,
                     bool is_norm, bool isextrn);
 void define_common(char *label, int32_t segment, int32_t size, char *special);
 void declare_as_global(char *label, char *special);
+bool is_local_label(char* label);
 int init_labels(void);
 void cleanup_labels(void);
 char *local_scope(char *label);
