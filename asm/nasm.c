@@ -2152,7 +2152,7 @@ static void assemble_file(char *fname, StrList **depend_ptr)
 				if(paddingRequired > 0)
 				{
 					insn padding_ins;
-					char paddingInstruction[128];
+					char* paddingInstruction = malloc(128 * sizeof(char));
 
 					sprintf(paddingInstruction, "times %d nop", paddingRequired);
 					parse_line(pass1, paddingInstruction, &padding_ins, def_label);
