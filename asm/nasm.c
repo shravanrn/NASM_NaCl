@@ -1313,8 +1313,28 @@ static void get_memory_string_rep(enum reg_enum baseReg, enum reg_enum indexReg,
 	else
 	{
 		const char* indexRegStr = nasm_reg_names[indexReg-EXPR_REG_START];
-		sprintf(str, "[%s %s*%d + %ld]", baseRegExp, indexRegStr, scale, offset);
+		char scale_str[32];
+		char offset_str[256];
+
+		if (scale == 1) {
+			scale_str[0] = '\0';
+		} else {
+			sprintf(scale_str, "*%d", scale);
+		}
+
+		if (offset == 0) {
+			offset_str[0] = '\0';
+		} else {
+			sprintf(offset_str, "+ %ld", offset);
+		}
+
+		sprintf(str, "[%s %s%s %s]", baseRegExp, indexRegStr, scale_str, offset_str);
 	}
+}
+
+static int is_rsp_rbp_inst(operand* op)
+{
+	return (op->basereg == R_RSP || op->basereg == R_RBP) && op->indexreg == R_none;
 }
 
 static void nacl_replace_instruction(insn* ins, int* count, insn* ret, bool* shouldBeInSameBlock)
@@ -1468,11 +1488,35 @@ static void nacl_replace_instruction(insn* ins, int* count, insn* ret, bool* sho
 			parse_line(pass1, instStr, &(ret[0]), NULL /* label callback */);
 			parse_line(pass1, "add rsp,r15", &(ret[1]), NULL /* label callback */);
     	}
+        else if (ins->opcode == I_PINSRW)
+        {
+			char instStr[256];
+			char memoryStringRep[256];
+			const char* instrName;
+
+			enum reg_enum srcBaseReg;
+			int64_t srcOffset;
+			enum reg_enum destReg;
+
+			instrName = nasm_insn_names[ins->opcode];
+			srcBaseReg = ins->oprs[1].basereg;
+			srcOffset = ins->oprs[1].offset;
+			destReg = ins->oprs[0].basereg;
+
+			*count = 2;
+			shouldBeInSameBlock[0] = shouldBeInSameBlock[1] = true;
+
+			nacl_clear_64_bit_reg_top32(srcBaseReg, &(ret[0]));
+
+			get_memory_string_rep(R_R15, srcBaseReg, 1 /* scale */, 0 /* offset specified as a different operand in this inst */, memoryStringRep);
+			sprintf(instStr, "%s %s,%s,%ld", instrName, regName(destReg), memoryStringRep, srcOffset);
+			parse_line(pass1, instStr, &(ret[1]), NULL /* label callback */);
+
+        }
     	else if(
 			ins->opcode != I_LEA && /* lea instructions look like memory ops but they arent*/
 			isOpOfType(ins->oprs[0], MEMORY) && /*dest is mem loc*/
-			ins->oprs[0].basereg != R_RSP && /*dest referred to by rsp which has the full pointer so no change necessary*/
-			ins->oprs[0].basereg != R_RBP  &&  /*dest referred to by rbp which has the full pointer so no change necessary*/
+			!is_rsp_rbp_inst(&(ins->oprs[0])) && /*dest referred to by rsp/rbp which has the full pointer so no change necessary*/
 			!isEAFlags(ins->oprs[0], EAF_REL) && /*ignore instr pointer relative addressing*/
 			isOpOfType(ins->oprs[1], REGISTER) && /*src is a register*/
 			ins->oprs[0].indexreg == R_none && ins->oprs[0].offset >= 0 /* easy case - does not use SIB addressing and positive offset */
@@ -1504,8 +1548,7 @@ static void nacl_replace_instruction(insn* ins, int* count, insn* ret, bool* sho
 			ins->opcode != I_LEA && /* lea instructions look like memory ops but they arent*/
 			isOpOfType(ins->oprs[0], REGISTER) && /*dest is a register*/
 			isOpOfType(ins->oprs[1], MEMORY) && /*src is mem loc*/
-			ins->oprs[1].basereg != R_RSP && /*src referred to by rsp which has the full pointer so no change necessary*/
-			ins->oprs[1].basereg != R_RBP  &&  /*src referred to by rbp which has the full pointer so no change necessary*/
+			!is_rsp_rbp_inst(&(ins->oprs[1])) && /*src referred to by rsp/rbp which has the full pointer so no change necessary*/
 			!isEAFlags(ins->oprs[1], EAF_REL) && /*ignore instr pointer relative addressing*/
 			ins->oprs[1].indexreg == R_none && ins->oprs[1].offset >= 0 /* easy case - does not use SIB addressing and positive offset */
 		)
@@ -1536,8 +1579,7 @@ static void nacl_replace_instruction(insn* ins, int* count, insn* ret, bool* sho
 			/*like before but uses SIB addressing or negative offset*/
 			ins->opcode != I_LEA && /* lea instructions look like memory ops but they arent*/
 			isOpOfType(ins->oprs[0], MEMORY) && /*dest is mem loc*/
-			ins->oprs[0].basereg != R_RSP && /*dest referred to by rsp which has the full pointer so no change necessary*/
-			ins->oprs[0].basereg != R_RBP  &&  /*dest referred to by rbp which has the full pointer so no change necessary*/
+			!is_rsp_rbp_inst(&(ins->oprs[0])) && /*dest referred to by rsp/rbp which has the full pointer so no change necessary*/
 			!isEAFlags(ins->oprs[0], EAF_REL) && /*ignore instr pointer relative addressing*/
 			isOpOfType(ins->oprs[1], REGISTER)/*src is a register*/
     	)
@@ -1598,8 +1640,7 @@ static void nacl_replace_instruction(insn* ins, int* count, insn* ret, bool* sho
 			ins->opcode != I_LEA && /* lea instructions look like memory ops but they arent*/
 			isOpOfType(ins->oprs[0], REGISTER) && /*dest is a register*/
 			isOpOfType(ins->oprs[1], MEMORY) && /*src is mem loc*/
-			ins->oprs[1].basereg != R_RSP && /*src referred to by rsp which has the full pointer so no change necessary*/
-			ins->oprs[1].basereg != R_RBP  &&  /*src referred to by rbp which has the full pointer so no change necessary*/
+			!is_rsp_rbp_inst(&(ins->oprs[1])) && /*src referred to by rsp/rbp which has the full pointer so no change necessary*/
 			!isEAFlags(ins->oprs[1], EAF_REL)/*ignore instr pointer relative addressing*/
 		)
     	{
