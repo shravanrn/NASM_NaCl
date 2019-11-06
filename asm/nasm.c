@@ -1553,27 +1553,33 @@ static void nacl_replace_instruction(insn* ins, int* count, insn* ret, bool* sho
 			ins->oprs[1].indexreg == R_none && ins->oprs[1].offset >= 0 /* easy case - does not use SIB addressing and positive offset */
 		)
     	{
-    		char instStr[256];
-    		char memoryStringRep[256];
-    		const char* instrName;
+            enum reg_enum srcBaseReg;
+            srcBaseReg = ins->oprs[1].basereg;
+            if (srcBaseReg == R_none) {
+                // There is an edge case where SSE loads of constant data look like this
+                // Easy way to identify this by checking there are no registers
+                useDefault = true;
+            } else {
+                char instStr[256];
+                char memoryStringRep[256];
+                const char* instrName;
 
-			enum reg_enum srcBaseReg;
-			int64_t srcOffset;
-			enum reg_enum destReg;
+                int64_t srcOffset;
+                enum reg_enum destReg;
 
-			instrName = nasm_insn_names[ins->opcode];
-			srcBaseReg = ins->oprs[1].basereg;
-			srcOffset = ins->oprs[1].offset;
-			destReg = ins->oprs[0].basereg;
+                instrName = nasm_insn_names[ins->opcode];
+                srcOffset = ins->oprs[1].offset;
+                destReg = ins->oprs[0].basereg;
 
-			*count = 2;
-			shouldBeInSameBlock[0] = shouldBeInSameBlock[1] = true;
+                *count = 2;
+                shouldBeInSameBlock[0] = shouldBeInSameBlock[1] = true;
 
-			nacl_clear_64_bit_reg_top32(srcBaseReg, &(ret[0]));
+                nacl_clear_64_bit_reg_top32(srcBaseReg, &(ret[0]));
 
-			get_memory_string_rep(R_R15, srcBaseReg, 1 /* scale */, srcOffset, memoryStringRep);
-			sprintf(instStr, "%s %s,%s", instrName, regName(destReg), memoryStringRep);
-			parse_line(pass1, instStr, &(ret[1]), NULL /* label callback */);
+                get_memory_string_rep(R_R15, srcBaseReg, 1 /* scale */, srcOffset, memoryStringRep);
+                sprintf(instStr, "%s %s,%s", instrName, regName(destReg), memoryStringRep);
+                parse_line(pass1, instStr, &(ret[1]), NULL /* label callback */);
+            }
     	}
     	else if(
 			/*like before but uses SIB addressing or negative offset*/
