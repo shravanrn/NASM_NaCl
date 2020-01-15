@@ -437,6 +437,14 @@ bool parse_check_is_label(char *buffer)
     if (i == TOKEN_EOS)
         return false;
 
+    // optional prologue
+    if (i == '[') {
+        i = stdscan(NULL, &tokval);
+        if (strcmp("global", tokval.t_charptr) == 0) {
+            i = stdscan(NULL, &tokval);
+        }
+    }
+
     if (i != TOKEN_ID       &&
         i != TOKEN_INSN     &&
         i != TOKEN_PREFIX   &&
@@ -454,7 +462,7 @@ bool parse_check_is_label(char *buffer)
     }
 
     /* Just a label here */
-    if (i == TOKEN_EOS)
+    if (i == TOKEN_EOS || (tokval.t_charptr && strcmp("function", tokval.t_charptr) == 0))
         return true;
 
     while (i == TOKEN_PREFIX ||

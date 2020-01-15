@@ -1443,7 +1443,14 @@ static void nacl_replace_instruction(insn* ins, int* count, insn* ret, bool* sho
 				If needed, this should be easy enough to do
 				This doesn't affect correctness - only perf, so ignoring
 				*/
-    			nasm_error(ERR_WARNING, "NaCl conversion of prefetch instructions that use SIB addressing not yet supported\n");
+
+                /* *count = 2;
+    			nasm_error(ERR_WARNING, "NaCl conversion of prefetch instructions that use SIB addressing not yet supported\n");*/
+
+                /* Actually it seems that the nacl verifier does not have an issue with this sort of code
+                so leaving it unchanged */
+                useDefault = true;
+
     		}
     	}
     	else if(ins->operands == 1 && isOpOfType(ins->oprs[0], MEMORY))
@@ -1556,8 +1563,8 @@ static void nacl_replace_instruction(insn* ins, int* count, insn* ret, bool* sho
             enum reg_enum srcBaseReg;
             srcBaseReg = ins->oprs[1].basereg;
             if (srcBaseReg == R_none) {
-                // There is an edge case where SSE loads of constant data look like this
-                // Easy way to identify this by checking there are no registers
+                /* There is an edge case where SSE loads of constant data look like this
+                Easy way to identify this by checking there are no registers */
                 useDefault = true;
             } else {
                 char instStr[256];
